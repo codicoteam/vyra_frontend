@@ -1,0 +1,6 @@
+{
+  "name": "VYRA - Publishing Platform",
+  "description": "A premium digital publishing platform for voices yielding research and awareness.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

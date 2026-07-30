@@ -1,0 +1,93 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Poppins:wght@500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Poppins", system-ui, sans-serif;
+  
+  --color-brand-primary: var(--brand-primary);
+  --color-brand-primary-hover: var(--brand-primary-hover);
+  --color-brand-primary-light: var(--brand-primary-light);
+  --color-brand-secondary: var(--brand-secondary);
+  --color-brand-accent: var(--brand-accent);
+  --color-brand-accent-light: var(--brand-accent-light);
+  
+  --color-brand-surface: var(--brand-surface);
+  --color-brand-bg: var(--brand-bg);
+  --color-brand-text-primary: var(--brand-text-primary);
+  --color-brand-text-secondary: var(--brand-text-secondary);
+  --color-brand-text-tertiary: var(--brand-text-tertiary);
+  --color-brand-border: var(--brand-border);
+  --color-brand-border-light: var(--brand-border-light);
+}
+
+:root {
+  /* Light Mode */
+  --brand-primary: #6D28D9;
+  --brand-primary-hover: #5B21B6;
+  --brand-primary-light: #EDE9FE;
+  --brand-secondary: #4F46E5;
+  --brand-accent: #06B6D4;
+  --brand-accent-light: #CFFAFE;
+  
+  --brand-surface: #FFFFFF;
+  --brand-bg: #F8FAFC;
+  --brand-text-primary: #0F172A;
+  --brand-text-secondary: #475569;
+  --brand-text-tertiary: #94A3B8;
+  --brand-border: #E2E8F0;
+  --brand-border-light: #F1F5F9;
+}
+
+/* Support both data-theme="dark" and dark class */
+[data-theme="dark"], .dark {
+  /* Dark Mode */
+  --brand-surface: #1E293B;
+  --brand-bg: #0F172A;
+  --brand-text-primary: #F1F5F9;
+  --brand-text-secondary: #CBD5E1;
+  --brand-text-tertiary: #64748B;
+  --brand-border: #334155;
+  --brand-border-light: #1E293B;
+  --brand-primary-light: #2E1065;
+  --brand-accent-light: #083344;
+}
+
+body {
+  background-color: var(--brand-bg);
+  color: var(--brand-text-primary);
+  font-family: var(--font-sans);
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--brand-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--brand-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--brand-text-tertiary);
+}
+
+/* Smooth custom classes for transitions */
+.transition-theme {
+  transition: background-color 0.3s ease, color 0.3s ease, border-color 0.3s ease, shadow 0.3s ease;
+}
+
+@keyframes audio-pulse {
+  0% {
+    height: 4px;
+  }
+  100% {
+    height: 24px;
+  }
+}
+
+
