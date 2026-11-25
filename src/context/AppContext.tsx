@@ -15,11 +15,19 @@ interface AppContextProps {
   notifications: NotificationItem[];
   toggleLike: (storyId: string) => void;
   toggleBookmark: (storyId: string) => void;
-  addStory: (story: Omit<Story, 'id' | 'likes' | 'bookmarks' | 'publishedDate'>) => void;
+  addStory: (
+    story: Omit<Story, 'id' | 'likes' | 'bookmarks' | 'publishedDate'>,
+  ) => Promise<boolean>;
   markNotificationAsRead: (id: string) => void;
   markAllNotificationsAsRead: () => void;
-  showToast: (message: string, type: 'success' | 'error' | 'warning' | 'info') => void;
-  activeToast: { message: string; type: 'success' | 'error' | 'warning' | 'info' } | null;
+  showToast: (
+    message: string,
+    type: 'success' | 'error' | 'warning' | 'info',
+  ) => void;
+  activeToast: {
+    message: string;
+    type: 'success' | 'error' | 'warning' | 'info';
+  } | null;
   clearToast: () => void;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
@@ -30,7 +38,9 @@ interface AppContextProps {
 
 const AppContext = createContext<AppContextProps | undefined>(undefined);
 
-export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const AppProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [currentRoute, setCurrentRoute] = useState<string>(() => {
     const hash = window.location.hash;
     if (hash && hash.startsWith('#')) {
@@ -62,7 +72,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('vyra-theme');
     if (saved === 'dark' || saved === 'light') return saved;
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+    if (
+      window.matchMedia &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches
+    ) {
       return 'dark';
     }
     return 'light';
@@ -81,8 +94,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [theme]);
 
   const toggleTheme = () => {
-    setTheme(prev => (prev === 'light' ? 'dark' : 'light'));
-    showToast(`Switched to ${theme === 'light' ? 'Dark' : 'Light'} Mode`, 'info');
+    setTheme((prev) => (prev === 'light' ? 'dark' : 'light'));
+    showToast(
+      `Switched to ${theme === 'light' ? 'Dark' : 'Light'} Mode`,
+      'info',
+    );
   };
 
   // Active User
@@ -100,7 +116,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const handleSetCurrentUser = (user: UserProfileData | null) => {
     if (user === null) {
-      api.auth.logout().catch(err => console.error(err));
+      api.auth.logout().catch((err) => console.error(err));
     }
     setCurrentUser(user);
   };
@@ -175,7 +191,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [likedStoryIds]);
 
   useEffect(() => {
-    localStorage.setItem('vyra-bookmarked-ids', JSON.stringify(bookmarkedStoryIds));
+    localStorage.setItem(
+      'vyra-bookmarked-ids',
+      JSON.stringify(bookmarkedStoryIds),
+    );
   }, [bookmarkedStoryIds]);
 
   const toggleLike = async (storyId: string) => {
@@ -193,20 +212,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         await api.likes.like(storyId);
       }
 
-      setLikedStoryIds(prev => {
-        const updated = isLiked ? prev.filter(id => id !== storyId) : [...prev, storyId];
-        setStories(allStories =>
-          allStories.map(story => {
+      setLikedStoryIds((prev) => {
+        const updated = isLiked
+          ? prev.filter((id) => id !== storyId)
+          : [...prev, storyId];
+        setStories((allStories) =>
+          allStories.map((story) => {
             if (story.id === storyId) {
               return {
                 ...story,
-                likes: story.likes + (isLiked ? -1 : 1)
+                likes: story.likes + (isLiked ? -1 : 1),
               };
             }
             return story;
-          })
+          }),
         );
-        showToast(isLiked ? 'Removed from liked articles' : 'Added to liked articles', isLiked ? 'info' : 'success');
+        showToast(
+          isLiked ? 'Removed from liked articles' : 'Added to liked articles',
+          isLiked ? 'info' : 'success',
+        );
         return updated;
       });
     } catch (err: any) {
@@ -229,20 +253,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         await api.bookmarks.add(storyId);
       }
 
-      setBookmarkedStoryIds(prev => {
-        const updated = isBookmarked ? prev.filter(id => id !== storyId) : [...prev, storyId];
-        setStories(allStories =>
-          allStories.map(story => {
+      setBookmarkedStoryIds((prev) => {
+        const updated = isBookmarked
+          ? prev.filter((id) => id !== storyId)
+          : [...prev, storyId];
+        setStories((allStories) =>
+          allStories.map((story) => {
             if (story.id === storyId) {
               return {
                 ...story,
-                bookmarks: story.bookmarks + (isBookmarked ? -1 : 1)
+                bookmarks: story.bookmarks + (isBookmarked ? -1 : 1),
               };
             }
             return story;
-          })
+          }),
         );
-        showToast(isBookmarked ? 'Removed from bookmarks' : 'Saved to bookmarks', isBookmarked ? 'info' : 'success');
+        showToast(
+          isBookmarked ? 'Removed from bookmarks' : 'Saved to bookmarks',
+          isBookmarked ? 'info' : 'success',
+        );
         return updated;
       });
     } catch (err: any) {
@@ -251,13 +280,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Add a newly published story
-  const addStory = async (newStoryData: Omit<Story, 'id' | 'likes' | 'bookmarks' | 'publishedDate'>) => {
+  const addStory = async (
+    newStoryData: Omit<Story, 'id' | 'likes' | 'bookmarks' | 'publishedDate'>,
+  ): Promise<boolean> => {
     try {
-      const coverImage = newStoryData.coverImage || 'https://picsum.photos/seed/story/800/450';
-      const categoryObj = categories.find(c => c.name.toLowerCase() === newStoryData.category.toLowerCase());
+      const coverImage =
+        newStoryData.coverImage || 'https://picsum.photos/seed/story/800/450';
+      const categoryObj = categories.find(
+        (c) => c.name.toLowerCase() === newStoryData.category.toLowerCase(),
+      );
       const categoryId = categoryObj ? categoryObj.id : undefined;
 
-      await api.stories.create({
+      const res = await api.stories.create({
         title: newStoryData.title,
         excerpt: newStoryData.excerpt,
         content: newStoryData.content,
@@ -266,14 +300,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         tags: newStoryData.tags,
         isAnonymous: newStoryData.isAnonymous,
         isResearch: newStoryData.isResearch,
-        isCampaign: newStoryData.isCampaign
+        isCampaign: newStoryData.isCampaign,
       });
 
+      const newId = res.data?.id ?? res.id;
+      if (newId) {
+        await api.posts.publish(newId);
+      }
+
       await refreshStoriesAndCategories();
-      showToast('Your article has been successfully published!', 'success');
-      navigateTo('/home');
+      showToast('Your story is live! 🎉', 'success');
+      navigateTo(newId ? `/story/${newId}` : '/home');
+      return true;
     } catch (err: any) {
       showToast(err.message || 'Failed to publish story', 'error');
+      return false;
     }
   };
 
@@ -288,20 +329,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [notifications]);
 
   const markNotificationAsRead = (id: string) => {
-    setNotifications(prev =>
-      prev.map(notif => (notif.id === id ? { ...notif, isRead: true } : notif))
+    setNotifications((prev) =>
+      prev.map((notif) =>
+        notif.id === id ? { ...notif, isRead: true } : notif,
+      ),
     );
   };
 
   const markAllNotificationsAsRead = () => {
-    setNotifications(prev => prev.map(notif => ({ ...notif, isRead: true })));
+    setNotifications((prev) =>
+      prev.map((notif) => ({ ...notif, isRead: true })),
+    );
     showToast('All notifications marked as read', 'success');
   };
 
   // Toast System
-  const [activeToast, setActiveToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' | 'info' } | null>(null);
+  const [activeToast, setActiveToast] = useState<{
+    message: string;
+    type: 'success' | 'error' | 'warning' | 'info';
+  } | null>(null);
 
-  const showToast = (message: string, type: 'success' | 'error' | 'warning' | 'info') => {
+  const showToast = (
+    message: string,
+    type: 'success' | 'error' | 'warning' | 'info',
+  ) => {
     setActiveToast({ message, type });
   };
 
@@ -337,7 +388,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSearchQuery,
         categories,
         adminExists,
-        checkAdminStatus
+        checkAdminStatus,
       }}
     >
       {children}

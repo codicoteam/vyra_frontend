@@ -1,200 +1,290 @@
 import React, { useState } from 'react';
+import { motion } from 'motion/react';
 import { Story } from '../types';
 import { useApp } from '../context/AppContext';
-import { Heart, Bookmark, Clock, Eye, AlertCircle, FileText, Globe } from 'lucide-react';
+import { Heart, Bookmark, Clock, AlertCircle, FileText, Globe, ShieldCheck, ArrowUpRight } from 'lucide-react';
 
 interface StoryCardProps {
   story: Story;
   variant?: 'default' | 'featured' | 'compact' | 'research';
 }
 
+// Category colour helper (works in both themes)
+export const getCategoryColor = (category: string) => {
+  const lower = String(category || '').toLowerCase();
+  if (lower.includes('tech') || lower.includes('quantum')) return 'bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300';
+  if (lower.includes('health') || lower.includes('biotech')) return 'bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300';
+  if (lower.includes('environment') || lower.includes('climate')) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300';
+  if (lower.includes('social') || lower.includes('humanrights')) return 'bg-cyan-100 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300';
+  if (lower.includes('psychology')) return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300';
+  if (lower.includes('space') || lower.includes('astro')) return 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300';
+  if (lower.includes('philosophy') || lower.includes('ethics')) return 'bg-stone-200 text-stone-700 dark:bg-stone-500/15 dark:text-stone-300';
+  if (lower.includes('community')) return 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300';
+  return 'bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300';
+};
+
+/**
+ * Icon name for a category. The backend falls back to 'Cpu' when a category has no icon,
+ * which makes every topic look the same – so infer one from the name in that case.
+ */
+export const getCategoryIconName = (name: string, iconName?: string) => {
+  if (iconName && iconName !== 'Cpu') return iconName;
+  const n = String(name || '').toLowerCase();
+  if (n.includes('environment') || n.includes('climate')) return 'Leaf';
+  if (n.includes('health') || n.includes('medic') || n.includes('biotech')) return 'HeartPulse';
+  if (n.includes('privacy') || n.includes('security')) return 'Lock';
+  if (n.includes('social') || n.includes('community') || n.includes('human')) return 'Users';
+  if (n.includes('psych') || n.includes('mental')) return 'Brain';
+  if (n.includes('space') || n.includes('astro')) return 'Rocket';
+  if (n.includes('philosophy') || n.includes('ethic')) return n.includes('tech') ? 'Cpu' : 'Scale';
+  if (n.includes('art') || n.includes('culture')) return 'Palette';
+  if (n.includes('science') || n.includes('research')) return 'FlaskConical';
+  if (n.includes('politic') || n.includes('law')) return 'Landmark';
+  return iconName || 'BookOpen';
+};
+
+/** Turn a markdown excerpt into readable plain text (drops images, link URLs, formatting) */
+export const plainExcerpt = (text?: string) =>
+  String(text || '')
+    .replace(/!\[[^\]]*\]\([^)]*\)?/g, '') // images (also truncated ones)
+    .replace(/\[([^\]]*)\]\([^)]*\)?/g, '$1') // links -> label
+    .replace(/https?:\/\/\S+/g, '') // bare URLs
+    .replace(/[#>*_`~|]+/g, '') // markdown symbols
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\.{3}$/, '');
+
+/** Category badge that sits on top of a photo – solid so it stays readable in both themes */
+const imageBadge = 'bg-white/90 text-slate-800 dark:bg-slate-950/75 dark:text-white shadow-sm backdrop-blur';
+
+/** Avatar with graceful fallback (anonymous posts and missing images) */
+export const Avatar: React.FC<{ src?: string; name: string; anonymous?: boolean; className?: string }> = ({
+  src,
+  name,
+  anonymous,
+  className = 'w-8 h-8',
+}) => {
+  const [failed, setFailed] = useState(false);
+  if (anonymous || !src || failed) {
+    return (
+      <span className={`${className} shrink-0 grid place-items-center rounded-full bg-gradient-to-br from-slate-700 to-slate-900 text-white ring-1 ring-brand-border`}>
+        {anonymous ? (
+          <ShieldCheck className="w-1/2 h-1/2" />
+        ) : (
+          <span className="text-[0.7em] font-semibold">{(name || '?').trim().charAt(0).toUpperCase()}</span>
+        )}
+      </span>
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(true)}
+      className={`${className} shrink-0 rounded-full object-cover ring-1 ring-brand-border`}
+    />
+  );
+};
+
+const CoverImage: React.FC<{ src: string; alt: string; className?: string; zoom?: string }> = ({ src, alt, className = '', zoom = 'group-hover:scale-[1.06]' }) => {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <>
+      {!loaded && !failed && <div className="absolute inset-0 skeleton" />}
+      {failed || !src ? (
+        <div className="absolute inset-0 bg-gradient-to-br from-violet-500/30 via-fuchsia-500/20 to-cyan-400/30 bg-dot-grid" />
+      ) : (
+        <img
+          src={src}
+          alt={alt}
+          loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={() => setFailed(true)}
+          referrerPolicy="no-referrer"
+          className={`w-full h-full object-cover ${zoom} transition-[transform,opacity] duration-700 ease-[cubic-bezier(0.16,1,0.3,1)] ${loaded ? 'opacity-100' : 'opacity-0'} ${className}`}
+        />
+      )}
+    </>
+  );
+};
+
 export const StoryCard: React.FC<StoryCardProps> = ({ story, variant = 'default' }) => {
   const { navigateTo, likedStoryIds, bookmarkedStoryIds, toggleLike, toggleBookmark } = useApp();
-  const [imgLoaded, setImgLoaded] = useState(false);
 
   const isLiked = likedStoryIds.includes(story.id);
   const isBookmarked = bookmarkedStoryIds.includes(story.id);
+  const authorName = story.isAnonymous ? 'Anonymous contributor' : story.author?.name;
+  const authorSub = story.isAnonymous ? 'Protected identity' : `@${story.author?.username}`;
 
+  const open = () => navigateTo(`/story/${story.id}`);
   const handleCardClick = (e: React.MouseEvent) => {
-    // Prevent clicking like/bookmark from navigating to story page
-    const target = e.target as HTMLElement;
-    if (target.closest('.interactive-btn')) {
-      return;
+    if ((e.target as HTMLElement).closest('.interactive-btn')) return;
+    open();
+  };
+  const handleKey = (e: React.KeyboardEvent) => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) {
+      e.preventDefault();
+      open();
     }
-    navigateTo(`/story/${story.id}`);
   };
 
   const formattedDate = new Date(story.publishedDate).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
-    year: 'numeric'
+    year: 'numeric',
   });
 
-  // Category Color Map helper
-  const getCategoryColor = (category: string) => {
-    const lower = category.toLowerCase();
-    if (lower.includes('tech') || lower.includes('quantum')) return 'bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300';
-    if (lower.includes('health') || lower.includes('biotech')) return 'bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300';
-    if (lower.includes('environment') || lower.includes('climate')) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300';
-    if (lower.includes('social') || lower.includes('humanrights')) return 'bg-cyan-100 text-cyan-700 dark:bg-cyan-950 dark:text-cyan-300';
-    if (lower.includes('psychology')) return 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300';
-    if (lower.includes('space') || lower.includes('astro')) return 'bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300';
-    if (lower.includes('philosophy') || lower.includes('ethics')) return 'bg-stone-100 text-stone-700 dark:bg-stone-950 dark:text-stone-300';
-    if (lower.includes('community')) return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-950 dark:text-yellow-300';
-    return 'bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300';
-  };
+  const LikeButton = ({ size = 'md' }: { size?: 'sm' | 'md' }) => (
+    <motion.button
+      whileTap={{ scale: 0.85 }}
+      onClick={() => toggleLike(story.id)}
+      aria-pressed={isLiked}
+      aria-label={isLiked ? 'Unlike' : 'Like'}
+      className={`inline-flex items-center gap-1.5 rounded-full transition-colors ${size === 'sm' ? 'h-8 px-2.5' : 'h-9 px-3'} ${
+        isLiked
+          ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400'
+          : 'text-brand-text-tertiary hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10'
+      }`}
+    >
+      <motion.span key={String(isLiked)} initial={{ scale: isLiked ? 0.4 : 1 }} animate={{ scale: 1 }} transition={{ type: 'spring', stiffness: 500, damping: 15 }}>
+        <Heart className={`${size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'} ${isLiked ? 'fill-current' : ''}`} />
+      </motion.span>
+      <span className="text-xs font-semibold tabular-nums">{story.likes}</span>
+    </motion.button>
+  );
 
-  if (variant === 'featured') {
-    return (
-      <div
-        id={`story-card-${story.id}`}
-        onClick={handleCardClick}
-        className="group relative flex flex-col md:flex-row bg-brand-surface rounded-2xl border border-brand-border hover:border-brand-primary/40 overflow-hidden shadow-md hover:shadow-xl transition-all duration-300 cursor-pointer"
-      >
-        {/* Cover Image */}
-        <div className="relative md:w-1/2 h-64 md:h-auto overflow-hidden bg-slate-100 dark:bg-slate-900 shrink-0">
-          <div className={`absolute inset-0 bg-slate-200 dark:bg-slate-800 animate-pulse ${imgLoaded ? 'opacity-0' : 'opacity-100'} transition-opacity duration-500`} />
-          <img
-            src={story.coverImage}
-            alt={story.title}
-            onLoad={() => setImgLoaded(true)}
-            referrerPolicy="no-referrer"
-            className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-700 ease-out ${imgLoaded ? 'opacity-100' : 'opacity-0'} transition-opacity duration-500`}
-          />
-          {/* Category Badge */}
-          <span className={`absolute top-4 left-4 text-xs font-semibold tracking-wide uppercase px-3 py-1.5 rounded-full shadow-sm ${getCategoryColor(story.category)}`}>
-            {story.category}
+  const BookmarkButton = ({ size = 'md' }: { size?: 'sm' | 'md' }) => (
+    <motion.button
+      whileTap={{ scale: 0.85 }}
+      onClick={() => toggleBookmark(story.id)}
+      aria-pressed={isBookmarked}
+      aria-label={isBookmarked ? 'Remove bookmark' : 'Bookmark'}
+      className={`grid place-items-center rounded-full transition-colors ${size === 'sm' ? 'w-8 h-8' : 'w-9 h-9'} ${
+        isBookmarked
+          ? 'bg-violet-50 text-brand-primary dark:bg-violet-500/15 dark:text-violet-300'
+          : 'text-brand-text-tertiary hover:text-brand-primary hover:bg-brand-border-light'
+      }`}
+    >
+      <Bookmark className={`${size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'} ${isBookmarked ? 'fill-current' : ''}`} />
+    </motion.button>
+  );
+
+  const Badges = () => (
+    <>
+      {story.isCampaign ? (
+        <span className="absolute top-3 right-3 inline-flex items-center gap-1 bg-rose-600/90 backdrop-blur text-white text-[10px] font-semibold tracking-wider uppercase px-2.5 py-1 rounded-full shadow-sm">
+          <span className="relative flex w-1.5 h-1.5">
+            <span className="absolute inset-0 rounded-full bg-white animate-ping opacity-75" />
+            <span className="relative w-1.5 h-1.5 rounded-full bg-white" />
           </span>
+          Campaign
+        </span>
+      ) : (story.isResearch || variant === 'research') ? (
+        <span className="absolute top-3 right-3 inline-flex items-center gap-1 bg-slate-900/70 backdrop-blur text-white text-[10px] font-semibold tracking-wider uppercase px-2.5 py-1 rounded-full">
+          {story.doi ? <FileText className="w-3 h-3" /> : <Globe className="w-3 h-3" />} {story.doi ? 'DOI' : 'Research'}
+        </span>
+      ) : null}
+    </>
+  );
 
-          {/* Research & Campaign Badges */}
-          {story.isResearch && (
-            <span className="absolute top-4 right-4 bg-sky-600 text-white text-xs font-medium px-2.5 py-1 rounded-md shadow-sm flex items-center gap-1">
-              <Globe className="w-3.5 h-3.5" /> Research
-            </span>
-          )}
-          {story.isCampaign && (
-            <span className="absolute top-4 right-4 bg-rose-600 text-white text-xs font-medium px-2.5 py-1 rounded-md shadow-sm flex items-center gap-1 animate-pulse">
-              <AlertCircle className="w-3.5 h-3.5" /> Campaign
-            </span>
-          )}
+  const CampaignProgress = ({ big = false }: { big?: boolean }) =>
+    story.isCampaign && story.goalProgress !== undefined ? (
+      <div className="mb-4">
+        <div className={`flex justify-between font-semibold mb-1.5 ${big ? 'text-xs' : 'text-[11px]'}`}>
+          <span className="text-rose-600 dark:text-rose-400">Campaign progress</span>
+          <span className="tabular-nums text-brand-text-secondary">{story.goalProgress}%</span>
         </div>
-
-        {/* Content */}
-        <div className="flex flex-col flex-1 p-6 sm:p-8 justify-between">
-          <div>
-            {/* Meta details */}
-            <div className="flex items-center gap-4 text-xs text-brand-text-tertiary mb-3">
-              <span className="flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> {story.readingTime} min read</span>
-              <span>•</span>
-              <span>{formattedDate}</span>
-            </div>
-
-            {/* Title */}
-            <h3 className="font-display font-bold text-2xl sm:text-3xl text-brand-text-primary group-hover:text-brand-primary transition-colors duration-200 leading-tight mb-4 line-clamp-2">
-              {story.title}
-            </h3>
-
-            {/* Excerpt */}
-            <p className="text-brand-text-secondary leading-relaxed mb-6 line-clamp-3">
-              {story.excerpt}
-            </p>
-
-            {/* Campaign Progress Bar */}
-            {story.isCampaign && story.goalProgress !== undefined && (
-              <div className="mb-6 interactive-btn">
-                <div className="flex justify-between text-xs font-medium mb-1.5">
-                  <span className="text-rose-600 dark:text-rose-400">Funding Goal Progress</span>
-                  <span>{story.goalProgress}%</span>
-                </div>
-                <div className="w-full h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-rose-500 rounded-full transition-all duration-500"
-                    style={{ width: `${story.goalProgress}%` }}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Author and Footer Actions */}
-          <div className="flex items-center justify-between pt-6 border-t border-brand-border-light">
-            <div className="flex items-center gap-3">
-              <img
-                src={story.author.avatar}
-                alt={story.author.name}
-                referrerPolicy="no-referrer"
-                className="w-10 h-10 rounded-full object-cover border border-brand-border"
-              />
-              <div>
-                <h4 className="text-sm font-semibold text-brand-text-primary">
-                  {story.isAnonymous ? 'Anonymous Contributor' : story.author.name}
-                </h4>
-                <p className="text-xs text-brand-text-tertiary">
-                  {story.isAnonymous ? 'Whistleblower Safeguard' : `@${story.author.username}`}
-                </p>
-              </div>
-            </div>
-
-            {/* Actions */}
-            <div className="flex items-center gap-2 interactive-btn">
-              <button
-                onClick={() => toggleLike(story.id)}
-                className={`p-2.5 rounded-full border transition-all duration-200 flex items-center justify-center ${
-                  isLiked
-                    ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/40 dark:border-rose-900/40 dark:text-rose-400 scale-110'
-                    : 'bg-transparent border-brand-border text-brand-text-secondary hover:text-rose-600 hover:bg-rose-50/50 dark:hover:bg-rose-950/20'
-                }`}
-                title="Like Article"
-              >
-                <Heart className={`w-4 h-4 ${isLiked ? 'fill-current' : ''}`} />
-                <span className="text-xs font-semibold ml-1.5">{story.likes}</span>
-              </button>
-
-              <button
-                onClick={() => toggleBookmark(story.id)}
-                className={`p-2.5 rounded-full border transition-all duration-200 flex items-center justify-center ${
-                  isBookmarked
-                    ? 'bg-purple-50 border-purple-200 text-brand-primary dark:bg-purple-950/40 dark:border-purple-900/40 dark:text-purple-300'
-                    : 'bg-transparent border-brand-border text-brand-text-secondary hover:text-brand-primary hover:bg-brand-primary-light/50'
-                }`}
-                title="Bookmark Article"
-              >
-                <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-current' : ''}`} />
-              </button>
-            </div>
-          </div>
+        <div className={`w-full ${big ? 'h-2' : 'h-1.5'} bg-brand-border-light rounded-full overflow-hidden`}>
+          <motion.div
+            className="h-full bg-gradient-to-r from-rose-500 to-orange-400 rounded-full"
+            initial={{ width: 0 }}
+            whileInView={{ width: `${Math.min(story.goalProgress, 100)}%` }}
+            viewport={{ once: true }}
+            transition={{ duration: 1, ease: [0.16, 1, 0.3, 1] }}
+          />
         </div>
       </div>
+    ) : null;
+
+  const cardBase =
+    'group relative bg-brand-surface ring-1 ring-brand-border hover:ring-brand-primary/30 overflow-hidden cursor-pointer transition-all duration-300 hover:-translate-y-1 hover:shadow-lift shadow-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-primary';
+
+  /* ---------------- Featured ---------------- */
+  if (variant === 'featured') {
+    return (
+      <article
+        id={`story-card-${story.id}`}
+        onClick={handleCardClick}
+        onKeyDown={handleKey}
+        tabIndex={0}
+        className={`${cardBase} flex flex-col md:flex-row rounded-3xl h-full`}
+      >
+        <div className="relative md:w-1/2 h-60 md:h-auto md:min-h-[340px] overflow-hidden bg-brand-border-light shrink-0">
+          <CoverImage src={story.coverImage} alt={story.title} />
+          <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-60 group-hover:opacity-80 transition-opacity" />
+          <span className={`absolute top-4 left-4 text-[11px] font-semibold tracking-wide uppercase px-3 py-1.5 rounded-full ${imageBadge}`}>
+            {story.category}
+          </span>
+          <Badges />
+        </div>
+
+        <div className="flex flex-col flex-1 p-6 sm:p-8 justify-between">
+          <div>
+            <div className="flex items-center gap-2 text-xs text-brand-text-tertiary mb-3">
+              <Clock className="w-3.5 h-3.5" /> {story.readingTime} min read
+              <span className="w-1 h-1 rounded-full bg-brand-text-tertiary/60" />
+              <time>{formattedDate}</time>
+            </div>
+            <h3 className="font-display font-bold text-2xl sm:text-[28px] text-brand-text-primary leading-tight mb-3 line-clamp-3">
+              <span className="bg-gradient-to-r from-brand-primary to-brand-primary bg-[length:0%_2px] bg-no-repeat bg-left-bottom group-hover:bg-[length:100%_2px] transition-[background-size] duration-500">
+                {story.title}
+              </span>
+            </h3>
+            <p className="text-brand-text-secondary leading-relaxed mb-6 line-clamp-3 break-words">{plainExcerpt(story.excerpt)}</p>
+            <div className="interactive-btn"><CampaignProgress big /></div>
+          </div>
+
+          <div className="flex items-center justify-between pt-5 border-t border-brand-border-light">
+            <div className="flex items-center gap-3 min-w-0">
+              <Avatar src={story.author?.avatar} name={authorName} anonymous={story.isAnonymous} className="w-10 h-10" />
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-brand-text-primary truncate">{authorName}</p>
+                <p className="text-xs text-brand-text-tertiary truncate">{authorSub}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 interactive-btn">
+              <LikeButton />
+              <BookmarkButton />
+            </div>
+          </div>
+        </div>
+      </article>
     );
   }
 
+  /* ---------------- Compact ---------------- */
   if (variant === 'compact') {
     return (
-      <div
+      <article
         id={`story-card-${story.id}`}
         onClick={handleCardClick}
-        className="group flex gap-4 bg-brand-surface p-4 rounded-xl border border-brand-border hover:border-brand-primary/40 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer"
+        onKeyDown={handleKey}
+        tabIndex={0}
+        className={`${cardBase} hover:-translate-y-0.5 flex gap-4 p-3.5 rounded-2xl`}
       >
-        {/* Cover Image */}
-        <div className="relative w-24 h-24 sm:w-28 sm:h-28 overflow-hidden rounded-lg bg-slate-100 dark:bg-slate-900 shrink-0">
-          <div className={`absolute inset-0 bg-slate-200 dark:bg-slate-800 animate-pulse ${imgLoaded ? 'opacity-0' : 'opacity-100'}`} />
-          <img
-            src={story.coverImage}
-            alt={story.title}
-            onLoad={() => setImgLoaded(true)}
-            referrerPolicy="no-referrer"
-            className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out ${imgLoaded ? 'opacity-100' : 'opacity-0'}`}
-          />
+        <div className="relative w-24 h-24 sm:w-28 sm:h-28 overflow-hidden rounded-xl bg-brand-border-light shrink-0">
+          <CoverImage src={story.coverImage} alt={story.title} zoom="group-hover:scale-110" />
         </div>
 
-        {/* Content */}
-        <div className="flex flex-col justify-between flex-1 min-w-0">
+        <div className="flex flex-col justify-between flex-1 min-w-0 py-0.5">
           <div>
-            <div className="flex items-center gap-2 mb-1">
-              <span className={`text-[10px] font-bold tracking-wide uppercase px-2 py-0.5 rounded-full ${getCategoryColor(story.category)}`}>
+            <div className="flex items-center gap-2 mb-1.5">
+              <span className={`text-[10px] font-semibold tracking-wide uppercase px-2 py-0.5 rounded-full ${getCategoryColor(story.category)}`}>
                 {story.category}
               </span>
-              <span className="text-[10px] text-brand-text-tertiary">{formattedDate}</span>
+              <span className="text-[11px] text-brand-text-tertiary">{formattedDate}</span>
             </div>
             <h4 className="font-display font-semibold text-sm sm:text-base text-brand-text-primary group-hover:text-brand-primary transition-colors line-clamp-2 leading-snug">
               {story.title}
@@ -202,153 +292,73 @@ export const StoryCard: React.FC<StoryCardProps> = ({ story, variant = 'default'
           </div>
 
           <div className="flex items-center justify-between text-xs pt-2 text-brand-text-secondary">
-            <span>By {story.isAnonymous ? 'Anonymous' : story.author.name}</span>
-            <div className="flex items-center gap-3 interactive-btn">
-              <button
-                onClick={() => toggleLike(story.id)}
-                className={`flex items-center gap-1 ${isLiked ? 'text-rose-500 font-bold' : 'text-brand-text-secondary hover:text-rose-500'}`}
-              >
-                <Heart className={`w-3.5 h-3.5 ${isLiked ? 'fill-current' : ''}`} />
-                <span>{story.likes}</span>
-              </button>
-              <button
-                onClick={() => toggleBookmark(story.id)}
-                className={`${isBookmarked ? 'text-brand-primary' : 'text-brand-text-secondary hover:text-brand-primary'}`}
-              >
-                <Bookmark className={`w-3.5 h-3.5 ${isBookmarked ? 'fill-current' : ''}`} />
-              </button>
+            <span className="truncate">By {story.isAnonymous ? 'Anonymous' : story.author?.name}</span>
+            <div className="flex items-center interactive-btn -mr-1">
+              <LikeButton size="sm" />
+              <BookmarkButton size="sm" />
             </div>
           </div>
         </div>
-      </div>
+      </article>
     );
   }
 
-  // Default Standard Card or Research Variant
+  /* ---------------- Default / research ---------------- */
   return (
-    <div
+    <article
       id={`story-card-${story.id}`}
       onClick={handleCardClick}
-      className="group flex flex-col bg-brand-surface rounded-xl border border-brand-border hover:border-brand-primary/40 overflow-hidden shadow-sm hover:shadow-lg transition-all duration-300 cursor-pointer h-full justify-between"
+      onKeyDown={handleKey}
+      tabIndex={0}
+      className={`${cardBase} flex flex-col rounded-2xl h-full`}
     >
-      <div>
-        {/* Cover Image */}
-        <div className="relative h-48 w-full overflow-hidden bg-slate-100 dark:bg-slate-900">
-          <div className={`absolute inset-0 bg-slate-200 dark:bg-slate-800 animate-pulse ${imgLoaded ? 'opacity-0' : 'opacity-100'}`} />
-          <img
-            src={story.coverImage}
-            alt={story.title}
-            onLoad={() => setImgLoaded(true)}
-            referrerPolicy="no-referrer"
-            className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-500 ease-out ${imgLoaded ? 'opacity-100' : 'opacity-0'}`}
-          />
-          {/* Category Badge */}
-          <span className={`absolute top-3 left-3 text-[10px] font-bold tracking-wide uppercase px-2.5 py-1 rounded-full shadow-sm ${getCategoryColor(story.category)}`}>
-            {story.category}
-          </span>
-
-          {/* DOI Research paper Badge */}
-          {(story.isResearch || variant === 'research') && story.doi && (
-            <span className="absolute top-3 right-3 bg-sky-600 text-white text-[10px] font-semibold tracking-wider uppercase px-2 py-1 rounded shadow-sm flex items-center gap-1">
-              <FileText className="w-3 h-3" /> DOI Research
-            </span>
-          )}
-
-          {/* Active Campaigns */}
-          {story.isCampaign && (
-            <span className="absolute top-3 right-3 bg-rose-600 text-white text-[10px] font-semibold tracking-wider uppercase px-2 py-1 rounded shadow-sm flex items-center gap-1 animate-pulse">
-              <AlertCircle className="w-3 h-3" /> Campaign
-            </span>
-          )}
-        </div>
-
-        {/* Body Content */}
-        <div className="p-5">
-          <div className="flex items-center gap-3 text-xs text-brand-text-tertiary mb-2">
-            <span className="flex items-center gap-1"><Clock className="w-3 h-3" /> {story.readingTime} min read</span>
-            <span>•</span>
-            <span>{formattedDate}</span>
-          </div>
-
-          <h3 className="font-display font-bold text-lg text-brand-text-primary group-hover:text-brand-primary transition-colors leading-snug mb-2 line-clamp-2">
-            {story.title}
-          </h3>
-
-          <p className="text-sm text-brand-text-secondary leading-relaxed line-clamp-3 mb-4">
-            {story.excerpt}
-          </p>
-
-          {story.isCampaign && story.goalProgress !== undefined && (
-            <div className="mb-4 interactive-btn">
-              <div className="flex justify-between text-[11px] font-semibold mb-1">
-                <span className="text-rose-600 dark:text-rose-400">Campaign Raised</span>
-                <span>{story.goalProgress}%</span>
-              </div>
-              <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-rose-500 rounded-full"
-                  style={{ width: `${story.goalProgress}%` }}
-                />
-              </div>
-            </div>
-          )}
-
-          {story.doi && (
-            <div className="flex items-center gap-1.5 text-[11px] font-mono text-brand-text-tertiary mb-1">
-              <span className="bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded text-brand-text-secondary font-semibold">DOI</span>
-              <span className="truncate">{story.doi}</span>
-            </div>
-          )}
-        </div>
+      <div className="relative aspect-[16/10] w-full overflow-hidden bg-brand-border-light">
+        <CoverImage src={story.coverImage} alt={story.title} />
+        <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+        <span className={`absolute top-3 left-3 text-[10px] font-semibold tracking-wide uppercase px-2.5 py-1 rounded-full ${imageBadge}`}>
+          {story.category}
+        </span>
+        <Badges />
+        <span className="absolute bottom-3 right-3 grid place-items-center w-9 h-9 rounded-full bg-white/90 text-slate-900 opacity-0 translate-y-2 group-hover:opacity-100 group-hover:translate-y-0 transition-all duration-300 shadow-lg">
+          <ArrowUpRight className="w-4 h-4" />
+        </span>
       </div>
 
-      {/* Footer Author Row */}
-      <div className="flex items-center justify-between p-5 pt-3 border-t border-brand-border-light">
-        <div className="flex items-center gap-2.5">
-          <img
-            src={story.author.avatar}
-            alt={story.author.name}
-            referrerPolicy="no-referrer"
-            className="w-8 h-8 rounded-full object-cover border border-brand-border"
-          />
-          <div className="min-w-0">
-            <h4 className="text-xs font-semibold text-brand-text-primary truncate">
-              {story.isAnonymous ? 'Anonymous Contributor' : story.author.name}
-            </h4>
-            <p className="text-[10px] text-brand-text-tertiary truncate">
-              {story.isAnonymous ? 'Secured Voice' : `@${story.author.username}`}
-            </p>
+      <div className="flex flex-col flex-1 p-5">
+        <div className="flex items-center gap-2 text-xs text-brand-text-tertiary mb-2.5">
+          <Clock className="w-3 h-3" /> {story.readingTime} min read
+          <span className="w-1 h-1 rounded-full bg-brand-text-tertiary/60" />
+          <time>{formattedDate}</time>
+        </div>
+
+        <h3 className="font-display font-semibold text-lg text-brand-text-primary group-hover:text-brand-primary transition-colors leading-snug mb-2 line-clamp-2">
+          {story.title}
+        </h3>
+        <p className="text-sm text-brand-text-secondary leading-relaxed line-clamp-3 mb-4 break-words">{plainExcerpt(story.excerpt)}</p>
+
+        <div className="interactive-btn"><CampaignProgress /></div>
+
+        {story.doi && (
+          <div className="flex items-center gap-1.5 text-[11px] font-mono text-brand-text-tertiary mb-3">
+            <span className="bg-brand-border-light px-1.5 py-0.5 rounded text-brand-text-secondary font-semibold">DOI</span>
+            <span className="truncate">{story.doi}</span>
+          </div>
+        )}
+
+        <div className="mt-auto flex items-center justify-between pt-4 border-t border-brand-border-light">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <Avatar src={story.author?.avatar} name={authorName} anonymous={story.isAnonymous} className="w-8 h-8" />
+            <div className="min-w-0">
+              <p className="text-xs font-semibold text-brand-text-primary truncate">{authorName}</p>
+              <p className="text-[11px] text-brand-text-tertiary truncate">{authorSub}</p>
+            </div>
+          </div>
+          <div className="flex items-center interactive-btn -mr-1.5">
+            <LikeButton size="sm" />
+            <BookmarkButton size="sm" />
           </div>
         </div>
-
-        {/* Action icons */}
-        <div className="flex items-center gap-1.5 interactive-btn">
-          <button
-            onClick={() => toggleLike(story.id)}
-            className={`p-2 rounded-full border transition-all duration-200 flex items-center justify-center ${
-              isLiked
-                ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/40 dark:border-rose-900/40 dark:text-rose-400 scale-105'
-                : 'bg-transparent border-brand-border text-brand-text-secondary hover:text-rose-600 hover:bg-rose-50/50 dark:hover:bg-rose-950/20'
-            }`}
-            title="Like"
-          >
-            <Heart className={`w-3.5 h-3.5 ${isLiked ? 'fill-current' : ''}`} />
-            <span className="text-[10px] font-bold ml-1">{story.likes}</span>
-          </button>
-
-          <button
-            onClick={() => toggleBookmark(story.id)}
-            className={`p-2 rounded-full border transition-all duration-200 flex items-center justify-center ${
-              isBookmarked
-                ? 'bg-purple-50 border-purple-200 text-brand-primary dark:bg-purple-950/40 dark:border-purple-900/40 dark:text-purple-300'
-                : 'bg-transparent border-brand-border text-brand-text-secondary hover:text-brand-primary hover:bg-brand-primary-light/50'
-            }`}
-            title="Bookmark"
-          >
-            <Bookmark className={`w-3.5 h-3.5 ${isBookmarked ? 'fill-current' : ''}`} />
-          </button>
-        </div>
       </div>
-    </div>
+    </article>
   );
 };

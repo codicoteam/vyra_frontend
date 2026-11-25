@@ -50,10 +50,11 @@ const AppContent: React.FC = () => {
   };
 
   return (
-    <Layout>
-      {renderActivePage()}
+    <>
+      <Layout>{renderActivePage()}</Layout>
+      {/* Outside the page transition so toasts survive navigation */}
       <Toast />
-    </Layout>
+    </>
   );
 };
 

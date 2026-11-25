@@ -1,220 +1,338 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { useApp } from '../context/AppContext';
-
-import { StoryCard } from '../components/StoryCard';
-import { Compass, BookOpen, SlidersHorizontal, ChevronRight, Eye } from 'lucide-react';
+import { Story } from '../types';
+import { StoryCard, Avatar, getCategoryColor, getCategoryIconName } from '../components/StoryCard';
+import { Compass, BookOpen, ArrowLeft, ArrowUpRight, Search, Hash, Heart, Users, X, PenLine } from 'lucide-react';
 import * as Icons from 'lucide-react';
 
+type Sort = 'latest' | 'popular' | 'longest';
+
+const renderIcon = (iconName: string, className = 'w-5 h-5', categoryName = '') => {
+  const LucideIcon = (Icons as any)[getCategoryIconName(categoryName, iconName)];
+  return LucideIcon ? <LucideIcon className={className} /> : <BookOpen className={className} />;
+};
+
+const sortStories = (list: Story[], sort: Sort) => {
+  const out = [...list];
+  if (sort === 'latest') out.sort((a, b) => +new Date(b.publishedDate) - +new Date(a.publishedDate));
+  if (sort === 'popular') out.sort((a, b) => b.likes - a.likes);
+  if (sort === 'longest') out.sort((a, b) => b.readingTime - a.readingTime);
+  return out;
+};
+
+const SortControl: React.FC<{ value: Sort; onChange: (s: Sort) => void; id: string }> = ({ value, onChange, id }) => (
+  <div className="flex items-center p-1 rounded-full bg-brand-surface ring-1 ring-brand-border w-fit" role="tablist" aria-label="Sort stories">
+    {(
+      [
+        ['latest', 'Latest'],
+        ['popular', 'Popular'],
+        ['longest', 'Long reads'],
+      ] as [Sort, string][]
+    ).map(([k, label]) => (
+      <button
+        key={k}
+        role="tab"
+        aria-selected={value === k}
+        onClick={() => onChange(k)}
+        className={`relative h-8 px-3.5 rounded-full text-sm font-medium transition-colors ${value === k ? 'text-brand-surface' : 'text-brand-text-secondary hover:text-brand-text-primary'}`}
+      >
+        {value === k && <motion.span layoutId={`sort-${id}`} className="absolute inset-0 rounded-full bg-brand-text-primary" transition={{ type: 'spring', stiffness: 420, damping: 34 }} />}
+        <span className="relative">{label}</span>
+      </button>
+    ))}
+  </div>
+);
+
+const StoryGrid: React.FC<{ stories: Story[]; cols?: string }> = ({ stories, cols = 'md:grid-cols-2 lg:grid-cols-3' }) => (
+  <motion.div layout className={`grid grid-cols-1 ${cols} gap-6`}>
+    <AnimatePresence mode="popLayout">
+      {stories.map((s, i) => (
+        <motion.div
+          key={s.id}
+          layout
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, scale: 0.96 }}
+          transition={{ duration: 0.35, delay: Math.min(i, 8) * 0.04 }}
+          className="h-full"
+        >
+          <StoryCard story={s} />
+        </motion.div>
+      ))}
+    </AnimatePresence>
+  </motion.div>
+);
+
+const Empty: React.FC<{ title: string; text: string; onWrite?: () => void }> = ({ title, text, onWrite }) => (
+  <div className="p-12 rounded-3xl bg-brand-surface ring-1 ring-brand-border text-center flex flex-col items-center">
+    <div className="grid place-items-center w-14 h-14 rounded-2xl bg-brand-primary-light text-brand-primary mb-4">
+      <BookOpen className="w-6 h-6" />
+    </div>
+    <h4 className="font-display font-semibold text-lg text-brand-text-primary">{title}</h4>
+    <p className="text-sm text-brand-text-secondary max-w-sm mt-1.5">{text}</p>
+    {onWrite && (
+      <button onClick={onWrite} className="mt-6 inline-flex items-center gap-2 h-10 px-5 bg-brand-gradient text-white rounded-full text-sm font-semibold shadow-glow">
+        <PenLine className="w-4 h-4" /> Write the first story
+      </button>
+    )}
+  </div>
+);
+
 export const ExplorePage: React.FC = () => {
-  const { currentRoute, navigateTo, stories, showToast, categories } = useApp();
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<'latest' | 'popular' | 'reading-time'>('latest');
-  const [filteredStories, setFilteredStories] = useState<any[]>([]);
+  const { currentRoute, navigateTo, stories, categories } = useApp();
+  const [sortBy, setSortBy] = useState<Sort>('latest');
+  const [query, setQuery] = useState('');
 
-  // Dynamically extract category from route if in form `/explore/Category%20Name`
-  const getRouteCategory = () => {
-    if (currentRoute.startsWith('/explore/')) {
-      const parts = currentRoute.split('/');
-      if (parts.length > 2) {
-        return decodeURIComponent(parts[2]);
-      }
-    }
-    return null;
-  };
+  // Parse /explore, /explore/:category, /explore?tag=x
+  const [path, search] = currentRoute.split('?');
+  const tag = new URLSearchParams(search || '').get('tag');
+  const activeCategoryName = path.startsWith('/explore/') ? decodeURIComponent(path.slice('/explore/'.length)) : null;
 
-  const activeCategoryName = getRouteCategory();
+  const countFor = (name: string) => stories.filter((s) => s.category.toLowerCase() === name.toLowerCase()).length;
 
-  useEffect(() => {
-    let list = [...stories];
-
-    // Filter by category
-    const catToFilter = activeCategoryName || selectedCategory;
-    if (catToFilter) {
-      list = list.filter(story => story.category.toLowerCase() === catToFilter.toLowerCase());
-    }
-
-    // Sort
-    if (sortBy === 'latest') {
-      list.sort((a, b) => new Date(b.publishedDate).getTime() - new Date(a.publishedDate).getTime());
-    } else if (sortBy === 'popular') {
-      list.sort((a, b) => b.likes - a.likes);
-    } else if (sortBy === 'reading-time') {
-      list.sort((a, b) => b.readingTime - a.readingTime);
-    }
-
-    setFilteredStories(list);
-  }, [stories, selectedCategory, activeCategoryName, sortBy]);
-
-  // Handle dynamic Lucide icon matching
-  const renderCategoryIcon = (iconName: string, className: string = "w-6 h-6") => {
-    const LucideIcon = (Icons as any)[iconName];
-    if (LucideIcon) return <LucideIcon className={className} />;
-    return <BookOpen className={className} />;
-  };
-
-  const handleCategoryCardClick = (catName: string) => {
-    // Navigate to deep link so router handles it cleanly
-    navigateTo(`/explore/${catName}`);
-    showToast(`Exploring publications under ${catName}`, 'success');
-  };
-
-  // Render sub-view: Specific Category Page `/explore/:category`
+  /* ===================== Category detail ===================== */
   if (activeCategoryName) {
-    const categoryDetail = categories.find(c => c.name.toLowerCase() === activeCategoryName.toLowerCase()) || {
-      name: activeCategoryName,
-      description: "In-depth explorations and peer-reviewed journals published within this specific study field.",
-      count: filteredStories.length,
-      colorClass: "bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300",
-      iconName: "Compass"
-    };
+    const cat = categories.find((c) => c.name.toLowerCase() === activeCategoryName.toLowerCase());
+    const catStories = sortStories(stories.filter((s) => s.category.toLowerCase() === activeCategoryName.toLowerCase()), sortBy);
+    const writers = Array.from(
+      new Map(catStories.filter((s) => !s.isAnonymous && s.author?.id).map((s) => [s.author.id, s.author])).values(),
+    );
+    const totalLikes = catStories.reduce((n, s) => n + s.likes, 0);
 
     return (
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-fade-in text-left">
-        {/* Back Link */}
-        <div className="mb-6">
-          <button 
-            onClick={() => navigateTo('/explore')}
-            className="text-xs font-bold text-brand-primary hover:underline flex items-center gap-1 uppercase"
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-28">
+        <button
+          onClick={() => navigateTo('/explore')}
+          className="group inline-flex items-center gap-1.5 text-sm font-medium text-brand-text-tertiary hover:text-brand-text-primary mb-6"
+        >
+          <ArrowLeft className="w-4 h-4 transition-transform group-hover:-translate-x-0.5" /> All topics
+        </button>
+
+        {/* Hero */}
+        <motion.section
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="relative overflow-hidden rounded-[28px] bg-[#0d0a1f] text-white p-8 sm:p-12 mb-10"
+        >
+          <div className="absolute -top-24 -left-20 w-80 h-80 bg-violet-600/50 rounded-full blur-[100px]" />
+          <div className="absolute -bottom-24 right-0 w-80 h-80 bg-cyan-500/25 rounded-full blur-[100px]" />
+          <div className="absolute inset-0 bg-[radial-gradient(#ffffff10_1px,transparent_1px)] [background-size:22px_22px] [mask-image:linear-gradient(to_right,transparent,black)]" />
+          <motion.div
+            className="absolute right-6 sm:right-14 top-1/2 -translate-y-1/2 text-white/10"
+            animate={{ rotate: [0, 6, 0], y: ['-50%', '-54%', '-50%'] }}
+            transition={{ duration: 8, repeat: Infinity, ease: 'easeInOut' }}
           >
-            ← Back to All Categories
-          </button>
-        </div>
+            {renderIcon(cat?.iconName || 'Compass', 'w-40 h-40 sm:w-56 sm:h-56', activeCategoryName)}
+          </motion.div>
 
-        {/* Category Hero Banner */}
-        <div className={`p-8 sm:p-12 rounded-2xl ${categoryDetail.colorClass} mb-10 shadow-sm relative overflow-hidden transition-theme`}>
-          <div className="absolute right-4 bottom-4 opacity-10 pointer-events-none transform translate-x-4 translate-y-4 scale-150">
-            {renderCategoryIcon(categoryDetail.iconName, "w-48 h-48")}
-          </div>
-
-          <div className="max-w-2xl relative z-10">
-            <span className="text-xs font-black tracking-widest uppercase opacity-75">ACADEMIC DISCIPLINE</span>
-            <h1 className="font-display font-black text-3xl sm:text-5xl tracking-tight mt-2">{categoryDetail.name}</h1>
-            <p className="mt-3 text-sm sm:text-base leading-relaxed opacity-90">{categoryDetail.description}</p>
-            <div className="mt-6 flex items-center gap-4 text-xs font-semibold">
-              <span className="bg-black/10 px-3 py-1.5 rounded-lg">{categoryDetail.count} Active Publications</span>
-              <span className="bg-black/10 px-3 py-1.5 rounded-lg">Verified Peer Review</span>
+          <div className="relative max-w-2xl">
+            <span className={`inline-grid place-items-center w-12 h-12 rounded-2xl mb-5 ${getCategoryColor(activeCategoryName)}`}>
+              {renderIcon(cat?.iconName || 'Compass', 'w-6 h-6', activeCategoryName)}
+            </span>
+            <h1 className="font-display font-bold text-4xl sm:text-5xl tracking-tight">{cat?.name || activeCategoryName}</h1>
+            <p className="mt-3 text-base sm:text-lg text-slate-300 leading-relaxed">
+              {cat?.description || `Stories, research and reporting about ${activeCategoryName}.`}
+            </p>
+            <div className="mt-8 flex flex-wrap gap-8">
+              {[
+                { icon: BookOpen, value: catStories.length, label: 'Stories' },
+                { icon: Users, value: writers.length, label: 'Writers' },
+                { icon: Heart, value: totalLikes, label: 'Likes' },
+              ].map((s) => (
+                <div key={s.label}>
+                  <div className="font-display font-bold text-2xl tabular-nums">{s.value.toLocaleString()}</div>
+                  <div className="text-xs text-slate-400 flex items-center gap-1"><s.icon className="w-3 h-3" /> {s.label}</div>
+                </div>
+              ))}
             </div>
           </div>
-        </div>
+        </motion.section>
 
-        {/* Layout: Main publications & category side guides */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-          
-          {/* Main Grid */}
-          <div className="lg:col-span-8 space-y-6">
-            <div className="flex justify-between items-center border-b border-brand-border-light pb-4 mb-4">
-              <h3 className="font-display font-bold text-lg text-brand-text-primary">Discipline Publications</h3>
-              {/* Sorting */}
-              <div className="flex items-center gap-2">
-                <SlidersHorizontal className="w-4 h-4 text-brand-text-tertiary" />
-                <select 
-                  value={sortBy}
-                  onChange={(e) => setSortBy(e.target.value as any)}
-                  className="bg-brand-surface border border-brand-border text-xs font-semibold py-1 px-2.5 rounded-lg text-brand-text-secondary outline-none focus:border-brand-primary"
-                >
-                  <option value="latest">Latest</option>
-                  <option value="popular">Popularity</option>
-                  <option value="reading-time">Reading Time</option>
-                </select>
-              </div>
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
+          <div className="lg:col-span-8 min-w-0">
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+              <h2 className="font-display font-semibold text-xl text-brand-text-primary">Stories</h2>
+              <SortControl value={sortBy} onChange={setSortBy} id="cat" />
             </div>
-
-            {filteredStories.length === 0 ? (
-              <div className="bg-brand-surface border border-brand-border rounded-xl p-12 text-center flex flex-col items-center gap-4">
-                <BookOpen className="w-12 h-12 text-brand-text-tertiary" />
-                <h4 className="font-bold text-brand-text-primary text-base">No active publications</h4>
-                <p className="text-xs text-brand-text-secondary max-w-xs">Be the first scholar to publish under the {categoryDetail.name} discipline.</p>
-                <button onClick={() => navigateTo('/write')} className="px-5 py-2.5 bg-brand-primary text-white rounded-lg text-xs font-semibold">Draft first story</button>
-              </div>
+            {catStories.length === 0 ? (
+              <Empty title="No stories yet" text={`Nobody has published in ${cat?.name || activeCategoryName} yet.`} onWrite={() => navigateTo('/write')} />
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {filteredStories.map(story => (
-                  <StoryCard key={story.id} story={story} />
-                ))}
-              </div>
+              <StoryGrid stories={catStories} cols="md:grid-cols-2" />
             )}
           </div>
 
-          {/* Right sidebar: category authors */}
-          <div className="lg:col-span-4 space-y-6">
-            <div className="bg-brand-surface border border-brand-border p-6 rounded-xl text-left transition-theme">
-              <h4 className="font-display font-bold text-sm text-brand-text-primary mb-4 border-b border-brand-border-light pb-2.5 uppercase tracking-wider">Discipline Scholars</h4>
-              <div className="space-y-4">
-                {(() => {
-                  const authorsMap = new Map<string, any>();
-                  stories.forEach(story => {
-                    if (story.author && story.author.id) {
-                      authorsMap.set(story.author.id, story.author);
-                    }
-                  });
-                  return Array.from(authorsMap.values()).slice(0, 4);
-                })().map(user => (
-                  <div key={user.id} className="flex items-center justify-between gap-2 cursor-pointer group" onClick={() => navigateTo(`/profile/${user.username}`)}>
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <img src={user.avatar} className="w-8 h-8 rounded-full object-cover" />
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-brand-text-primary group-hover:text-brand-primary truncate">{user.name}</p>
-                        <p className="text-[10px] text-brand-text-tertiary truncate">{user.followersCount || 0} followers</p>
-                      </div>
-                    </div>
-                    <ChevronRight className="w-4 h-4 text-brand-text-tertiary group-hover:text-brand-primary transition-transform" />
-                  </div>
-                ))}
+          <aside className="lg:col-span-4 space-y-5 lg:sticky lg:top-24">
+            {writers.length > 0 && (
+              <section className="p-5 rounded-3xl bg-brand-surface ring-1 ring-brand-border shadow-soft">
+                <h3 className="font-display font-semibold text-brand-text-primary mb-3">Writers in this topic</h3>
+                <div className="space-y-1">
+                  {writers.slice(0, 6).map((w) => (
+                    <button
+                      key={w.id}
+                      onClick={() => navigateTo(`/profile/${w.username}`)}
+                      className="group w-full flex items-center justify-between gap-3 p-2 -mx-2 rounded-xl hover:bg-brand-border-light transition-colors text-left"
+                    >
+                      <span className="flex items-center gap-3 min-w-0">
+                        <Avatar src={w.avatar} name={w.name} className="w-9 h-9" />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold text-brand-text-primary truncate group-hover:text-brand-primary">{w.name}</span>
+                          <span className="block text-xs text-brand-text-tertiary truncate">@{w.username}</span>
+                        </span>
+                      </span>
+                      <ArrowUpRight className="w-4 h-4 text-brand-text-tertiary group-hover:text-brand-primary transition-colors" />
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+            <section className="p-5 rounded-3xl bg-brand-surface ring-1 ring-brand-border">
+              <h3 className="font-display font-semibold text-brand-text-primary mb-3">Other topics</h3>
+              <div className="flex flex-wrap gap-2">
+                {categories
+                  .filter((c) => c.name.toLowerCase() !== activeCategoryName.toLowerCase())
+                  .slice(0, 10)
+                  .map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => navigateTo(`/explore/${c.name}`)}
+                      className="inline-flex items-center gap-1.5 h-8 pl-1.5 pr-3 rounded-full ring-1 ring-brand-border text-xs font-medium text-brand-text-secondary hover:text-brand-primary hover:ring-brand-primary/40 transition-colors"
+                    >
+                      <span className={`grid place-items-center w-5 h-5 rounded-full ${getCategoryColor(c.name)}`}>{renderIcon(c.iconName, 'w-3 h-3', c.name)}</span>
+                      {c.name}
+                    </button>
+                  ))}
               </div>
-            </div>
-          </div>
-
+            </section>
+          </aside>
         </div>
-
       </div>
     );
   }
 
-  // Render main view: Global Explore Categories Dashboard
-  return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 animate-fade-in text-left">
-      
-      {/* Page header */}
-      <div className="flex items-center gap-2 mb-3">
-        <Compass className="w-6 h-6 text-brand-primary" />
-        <h1 className="font-display font-black text-3xl sm:text-4xl text-brand-text-primary tracking-tight">Explore Categories</h1>
-      </div>
-      <p className="text-brand-text-secondary text-sm max-w-xl mb-10">
-        Browse publications classified across 17 color-coded disciplines. Read peer-reviewed medical reports, technology reviews, or verified anonymous whistleblowers.
-      </p>
-
-      {/* Grid of 17 Categories */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 mb-14">
-        {categories.map((cat) => (
-          <div
-            key={cat.id}
-            id={cat.id}
-            onClick={() => handleCategoryCardClick(cat.name)}
-            className="group bg-brand-surface border border-brand-border hover:border-brand-primary/40 rounded-xl p-5 shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer flex flex-col justify-between"
-          >
-            <div>
-              <div className="flex justify-between items-start mb-4">
-                <div className={`p-2.5 rounded-lg ${cat.colorClass}`}>
-                  {renderCategoryIcon(cat.iconName)}
-                </div>
-                <span className="text-xs font-bold text-brand-text-tertiary bg-brand-bg px-2 py-0.5 rounded-md">
-                  {cat.count} Pubs
-                </span>
-              </div>
-              <h3 className="font-display font-bold text-sm text-brand-text-primary group-hover:text-brand-primary transition-colors mb-1.5">
-                {cat.name}
-              </h3>
-              <p className="text-xs text-brand-text-secondary line-clamp-2 leading-relaxed">
-                {cat.description}
-              </p>
-            </div>
-            <div className="flex items-center gap-1 text-[11px] font-semibold text-brand-primary mt-4 opacity-0 group-hover:opacity-100 transition-opacity">
-              Explore Study <ChevronRight className="w-3.5 h-3.5" />
-            </div>
+  /* ===================== Tag view ===================== */
+  if (tag) {
+    const tagged = sortStories(stories.filter((s) => s.tags?.some((t) => t.toLowerCase() === tag.toLowerCase())), sortBy);
+    return (
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-8 pb-28">
+        <button onClick={() => navigateTo('/explore')} className="group inline-flex items-center gap-1.5 text-sm font-medium text-brand-text-tertiary hover:text-brand-text-primary mb-6">
+          <ArrowLeft className="w-4 h-4 transition-transform group-hover:-translate-x-0.5" /> All topics
+        </button>
+        <div className="flex flex-wrap items-end justify-between gap-4 mb-8">
+          <div>
+            <span className="inline-grid place-items-center w-12 h-12 rounded-2xl bg-brand-primary-light text-brand-primary mb-4"><Hash className="w-6 h-6" /></span>
+            <h1 className="font-display font-bold text-4xl text-brand-text-primary tracking-tight">#{tag}</h1>
+            <p className="text-brand-text-secondary mt-1">{tagged.length} {tagged.length === 1 ? 'story' : 'stories'}</p>
           </div>
-        ))}
+          <SortControl value={sortBy} onChange={setSortBy} id="tag" />
+        </div>
+        {tagged.length === 0 ? <Empty title="No stories with this tag" text="Try another tag or browse topics." /> : <StoryGrid stories={tagged} />}
       </div>
+    );
+  }
 
+  /* ===================== Explore home ===================== */
+  const q = query.trim().toLowerCase();
+  const visibleCats = categories.filter((c) => !q || c.name.toLowerCase().includes(q) || c.description?.toLowerCase().includes(q));
+  const allStories = sortStories(
+    stories.filter(
+      (s) => !q || s.title.toLowerCase().includes(q) || s.excerpt.toLowerCase().includes(q) || s.category.toLowerCase().includes(q),
+    ),
+    sortBy,
+  );
+
+  return (
+    <div className="relative">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-gradient-to-b from-violet-500/[0.08] to-transparent" />
+
+      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-28">
+        {/* Hero + search */}
+        <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} className="max-w-2xl mb-12">
+          <span className="inline-flex items-center gap-1.5 text-xs font-semibold tracking-[0.14em] uppercase text-brand-primary">
+            <Compass className="w-3.5 h-3.5" /> Explore
+          </span>
+          <h1 className="font-display font-bold text-4xl sm:text-5xl text-brand-text-primary tracking-tight mt-2">
+            Find your next <span className="text-gradient">great read</span>
+          </h1>
+          <p className="text-brand-text-secondary text-lg mt-3">
+            {categories.length} topics and {stories.length} stories, from peer-reviewed research to first-hand accounts.
+          </p>
+
+          <div className="mt-7 flex items-center gap-2 h-14 pl-5 pr-2 rounded-2xl bg-brand-surface ring-1 ring-brand-border shadow-soft focus-within:ring-2 focus-within:ring-brand-primary transition-all">
+            <Search className="w-5 h-5 text-brand-text-tertiary shrink-0" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Filter topics and stories…"
+              aria-label="Filter topics and stories"
+              className="flex-1 min-w-0 bg-transparent outline-none text-base placeholder:text-brand-text-tertiary"
+            />
+            {query && (
+              <button onClick={() => setQuery('')} className="grid place-items-center w-9 h-9 rounded-xl hover:bg-brand-border-light text-brand-text-tertiary" aria-label="Clear">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+        </motion.div>
+
+        {/* Topics */}
+        <section className="mb-16">
+          <h2 className="font-display font-semibold text-xl text-brand-text-primary mb-5">Topics</h2>
+          {categories.length === 0 ? (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+              {Array.from({ length: 8 }).map((_, i) => <div key={i} className="h-36 rounded-3xl skeleton" />)}
+            </div>
+          ) : visibleCats.length === 0 ? (
+            <p className="text-sm text-brand-text-tertiary">No topics match “{query}”.</p>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4">
+              {visibleCats.map((cat, i) => {
+                const n = countFor(cat.name);
+                return (
+                  <motion.button
+                    key={cat.id}
+                    id={cat.id}
+                    initial={{ opacity: 0, y: 16 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: Math.min(i, 12) * 0.03 }}
+                    onClick={() => navigateTo(`/explore/${cat.name}`)}
+                    className="group relative overflow-hidden text-left p-4 sm:p-5 rounded-3xl bg-brand-surface ring-1 ring-brand-border hover:ring-brand-primary/30 shadow-soft hover:shadow-lift hover:-translate-y-1 transition-all duration-300"
+                  >
+                    <div className="absolute -right-6 -bottom-6 text-brand-text-primary opacity-[0.04] group-hover:opacity-[0.08] group-hover:scale-110 group-hover:-rotate-6 transition-all duration-500">
+                      {renderIcon(cat.iconName, 'w-28 h-28', cat.name)}
+                    </div>
+                    <div className="relative flex items-start justify-between mb-6 sm:mb-8">
+                      <span className={`grid place-items-center w-11 h-11 rounded-2xl ${getCategoryColor(cat.name)} transition-transform group-hover:scale-110`}>
+                        {renderIcon(cat.iconName, 'w-5 h-5', cat.name)}
+                      </span>
+                      <ArrowUpRight className="w-4 h-4 text-brand-text-tertiary opacity-0 -translate-x-1 translate-y-1 group-hover:opacity-100 group-hover:translate-x-0 group-hover:translate-y-0 group-hover:text-brand-primary transition-all" />
+                    </div>
+                    <h3 className="relative font-display font-semibold text-sm sm:text-base text-brand-text-primary leading-snug">{cat.name}</h3>
+                    <p className="relative text-xs text-brand-text-tertiary mt-1">
+                      {n} {n === 1 ? 'story' : 'stories'}
+                    </p>
+                  </motion.button>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        {/* All stories */}
+        <section>
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+            <h2 className="font-display font-semibold text-xl text-brand-text-primary">
+              {q ? `Stories matching “${query}”` : 'All stories'}
+            </h2>
+            <SortControl value={sortBy} onChange={setSortBy} id="all" />
+          </div>
+          {allStories.length === 0 ? (
+            <Empty title="No stories found" text={q ? 'Try a different search.' : 'Nothing has been published yet.'} />
+          ) : (
+            <StoryGrid stories={allStories} />
+          )}
+        </section>
+      </div>
     </div>
   );
 };

@@ -1,98 +1,174 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { motion, AnimatePresence, useScroll, useSpring } from 'motion/react';
 import { useApp } from '../context/AppContext';
-import { StoryCard } from '../components/StoryCard';
+import { StoryCard, Avatar, plainExcerpt } from '../components/StoryCard';
 import { ShareModal } from '../components/ShareModal';
+import ReactMarkdown from 'react-markdown';
 import { CommentsSection } from '../components/CommentsSection';
-import { 
-  Heart, Bookmark, Share2, Award, Clock, ArrowLeft, Download, FileText,
-  AlertTriangle, Play, HelpCircle, X, ShieldAlert, Check, ChevronRight,
-  Volume2, Pause, SkipForward, SkipBack, Type
+import {
+  Heart,
+  Bookmark,
+  Share2,
+  Clock,
+  ArrowLeft,
+  Download,
+  FileText,
+  AlertTriangle,
+  Play,
+  X,
+  ShieldCheck,
+  ChevronRight,
+  Headphones,
+  Pause,
+  SkipForward,
+  SkipBack,
+  Calendar,
+  Maximize2,
+  ArrowUp,
 } from 'lucide-react';
 
+type FontSize = 'normal' | 'large' | 'extra';
+
+/** Split article into speakable chunks (Chrome stops long utterances, so keep them short) */
+const toSpeechChunks = (markdown: string): string[] => {
+  const chunks: string[] = [];
+  markdown
+    .split(/\n{2,}/)
+    .map((p) => plainExcerpt(p))
+    .filter((p) => p.length > 1)
+    .forEach((para) => {
+      const sentences = para.match(/[^.!?]+[.!?]+["')\]]*\s*|[^.!?]+$/g) || [para];
+      let buf = '';
+      sentences.forEach((s) => {
+        if ((buf + s).length > 220 && buf) {
+          chunks.push(buf.trim());
+          buf = '';
+        }
+        buf += s;
+      });
+      if (buf.trim()) chunks.push(buf.trim());
+    });
+  return chunks;
+};
+
 export const StoryReadingPage: React.FC = () => {
-  const { currentRoute, navigateTo, stories, likedStoryIds, bookmarkedStoryIds, toggleLike, toggleBookmark, showToast } = useApp();
-  const [scrollPercent, setScrollPercent] = useState(0);
+  const { currentRoute, navigateTo, stories, likedStoryIds, bookmarkedStoryIds, toggleLike, toggleBookmark, showToast } =
+    useApp();
+
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [isFollowing, setIsFollowing] = useState(false);
-
-  // Sharing states
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [readingFontSize, setReadingFontSize] = useState<FontSize>(
+    () => (localStorage.getItem('vyra-reading-size') as FontSize) || 'normal',
+  );
+  const [showBackToTop, setShowBackToTop] = useState(false);
 
-  // Audio Narration Playback States
+  // Reading progress (spring-smoothed)
+  const { scrollYProgress } = useScroll();
+  const progress = useSpring(scrollYProgress, { stiffness: 200, damping: 30, mass: 0.3 });
+  const [percent, setPercent] = useState(0);
+  useEffect(() => scrollYProgress.on('change', (v) => {
+    setPercent(Math.round(v * 100));
+    setShowBackToTop(window.scrollY > 900);
+  }), [scrollYProgress]);
+
+  useEffect(() => localStorage.setItem('vyra-reading-size', readingFontSize), [readingFontSize]);
+
+  const storyId = currentRoute.split('/').pop()?.split('?')[0];
+  const story = stories.find((s) => s.id === storyId);
+
+  /* ---------------- Text-to-speech narration (Web Speech API) ---------------- */
+  const synth = typeof window !== 'undefined' && 'speechSynthesis' in window ? window.speechSynthesis : null;
+  const chunks = useMemo(() => (story ? toSpeechChunks(story.content) : []), [story?.content]);
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [voiceName, setVoiceName] = useState<string>(() => localStorage.getItem('vyra-voice') || '');
+  const [speed, setSpeed] = useState(1);
   const [isNarratorOpen, setIsNarratorOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [narrationSpeed, setNarrationSpeed] = useState<number>(1);
-  const [narrationVoice, setNarrationVoice] = useState<string>('Aura');
-  const [currentSectionIdx, setCurrentSectionIdx] = useState<number>(0);
-  const [readingFontSize, setReadingFontSize] = useState<'normal' | 'large' | 'extra'>('normal');
+  const [chunkIdx, setChunkIdx] = useState(0);
+  const utterRef = useRef<SpeechSynthesisUtterance | null>(null);
 
-  // Extract Story ID from route e.g. `/story/story-1`
-  const getStoryId = () => {
-    const parts = currentRoute.split('/');
-    return parts[parts.length - 1];
+  useEffect(() => {
+    if (!synth) return;
+    const load = () => {
+      const all = synth.getVoices();
+      const english = all.filter((v) => v.lang?.toLowerCase().startsWith('en'));
+      setVoices(english.length ? english : all);
+    };
+    load();
+    synth.addEventListener('voiceschanged', load);
+    return () => {
+      synth.removeEventListener('voiceschanged', load);
+      utterRef.current = null;
+      synth.cancel();
+    };
+  }, [synth]);
+
+  const stopSpeech = useCallback(() => {
+    utterRef.current = null;
+    synth?.cancel();
+    setIsPlaying(false);
+  }, [synth]);
+
+  const speakFrom = useCallback(
+    (idx: number, opts?: { rate?: number; voice?: string }) => {
+      if (!synth) return;
+      utterRef.current = null;
+      synth.cancel();
+      if (idx >= chunks.length) {
+        setIsPlaying(false);
+        setChunkIdx(0);
+        showToast("You've finished listening to this story", 'success');
+        return;
+      }
+      const u = new SpeechSynthesisUtterance(chunks[idx]);
+      u.rate = opts?.rate ?? speed;
+      const v = voices.find((x) => x.name === (opts?.voice ?? voiceName));
+      if (v) u.voice = v;
+      u.onend = () => {
+        if (utterRef.current === u) speakFrom(idx + 1, opts);
+      };
+      u.onerror = (e) => {
+        if (utterRef.current === u && e.error !== 'interrupted' && e.error !== 'canceled') {
+          setIsPlaying(false);
+          showToast('Narration stopped: your browser could not play audio', 'error');
+        }
+      };
+      utterRef.current = u;
+      setChunkIdx(idx);
+      setIsPlaying(true);
+      synth.speak(u);
+    },
+    [synth, chunks, speed, voices, voiceName, showToast],
+  );
+
+  const restartWith = (opts: { rate?: number; voice?: string }) => {
+    if (isPlaying) speakFrom(chunkIdx, opts);
   };
 
-  const storyId = getStoryId();
-  const story = stories.find(s => s.id === storyId);
-
-  // Calculate Reading Progress Bar percentage
   useEffect(() => {
-    const handleScroll = () => {
-      const scrollY = window.scrollY;
-      const docHeight = document.documentElement.scrollHeight;
-      const winHeight = window.innerHeight;
-      const totalScrollable = docHeight - winHeight;
-      if (totalScrollable > 0) {
-        const percent = Math.min((scrollY / totalScrollable) * 100, 100);
-        setScrollPercent(Math.round(percent));
-      }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightboxImage(null);
     };
-    window.addEventListener('scroll', handleScroll);
-    return () => window.removeEventListener('scroll', handleScroll);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
-
-  // Keyboard support to close lightbox with Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setLightboxImage(null);
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
-
-  // Split article into sections for reading
-  const paragraphs = story ? story.content.split('\n\n').filter(p => p.trim().length > 0) : [];
-
-  useEffect(() => {
-    let timer: NodeJS.Timeout;
-    if (isPlaying && isNarratorOpen) {
-      const baseDuration = 5500; // 5.5s per section
-      const duration = baseDuration / narrationSpeed;
-      
-      timer = setInterval(() => {
-        setCurrentSectionIdx(prev => {
-          if (prev >= paragraphs.length - 1) {
-            setIsPlaying(false);
-            showToast("You've finished listening to the publication report", "success");
-            return prev;
-          }
-          return prev + 1;
-        });
-      }, duration);
-    }
-    return () => clearInterval(timer);
-  }, [isPlaying, isNarratorOpen, narrationSpeed, paragraphs.length]);
 
   if (!story) {
     return (
-      <div className="max-w-xl mx-auto py-20 px-4 text-center">
-        <AlertTriangle className="w-16 h-16 text-amber-500 mx-auto mb-4" />
-        <h2 className="font-display font-bold text-2xl text-brand-text-primary">Publication Not Found</h2>
-        <p className="text-brand-text-secondary mt-2">The article requested does not exist or has been archived under whistleblower protections.</p>
-        <button onClick={() => navigateTo('/home')} className="mt-6 px-6 py-3 bg-brand-primary text-white rounded-xl font-semibold">
-          Return to Home Feed
+      <div className="max-w-xl mx-auto py-28 px-4 text-center">
+        <div className="mx-auto mb-6 grid place-items-center w-16 h-16 rounded-2xl bg-amber-100 dark:bg-amber-500/15 text-amber-600 dark:text-amber-400">
+          <AlertTriangle className="w-8 h-8" />
+        </div>
+        <h2 className="font-display font-bold text-2xl text-brand-text-primary">Story not found</h2>
+        <p className="text-brand-text-secondary mt-2">
+          This story doesn't exist, is still loading, or has been archived.
+        </p>
+        <button
+          onClick={() => navigateTo('/home')}
+          className="mt-8 h-11 px-6 bg-brand-gradient text-white rounded-full font-semibold shadow-glow"
+        >
+          Back to feed
         </button>
       </div>
     );
@@ -100,361 +176,343 @@ export const StoryReadingPage: React.FC = () => {
 
   const isLiked = likedStoryIds.includes(story.id);
   const isBookmarked = bookmarkedStoryIds.includes(story.id);
+  const authorName = story.isAnonymous ? 'Anonymous contributor' : story.author?.name;
+  const excerpt = plainExcerpt(story.excerpt);
+  const contentStart = plainExcerpt(story.content).slice(0, 40);
+  const showDek = excerpt.length > 3 && !contentStart.startsWith(excerpt.replace(/\.\.\.$/, '').slice(0, 40));
 
-  // Format date
   const formattedDate = new Date(story.publishedDate).toLocaleDateString('en-US', {
     month: 'long',
     day: 'numeric',
-    year: 'numeric'
+    year: 'numeric',
   });
 
-  const handleShare = () => {
-    setIsShareModalOpen(true);
-  };
-
   const handleDownloadAttachment = (fileName: string) => {
-    showToast(`Securing download token for: ${fileName}`, 'info');
-    setTimeout(() => {
-      showToast(`Successfully downloaded verification asset: ${fileName}`, 'success');
-    }, 1000);
+    showToast(`Preparing download: ${fileName}`, 'info');
+    setTimeout(() => showToast(`Downloaded ${fileName}`, 'success'), 1000);
   };
 
   const handleToggleFollow = () => {
     setIsFollowing(!isFollowing);
-    showToast(isFollowing ? `Unfollowed @${story.author.username}` : `Following @${story.author.username} successfully`, 'success');
+    showToast(isFollowing ? `Unfollowed @${story.author.username}` : `Following @${story.author.username}`, 'success');
   };
 
-  // Curate related publications
-  const relatedStories = stories
-    .filter(s => s.category === story.category && s.id !== story.id)
-    .slice(0, 3);
+  const relatedStories = stories.filter((s) => s.category === story.category && s.id !== story.id).slice(0, 3);
 
-  const getFontSizeClass = () => {
-    if (readingFontSize === 'large') return 'text-lg sm:text-xl';
-    if (readingFontSize === 'extra') return 'text-xl sm:text-2xl';
-    return 'text-base sm:text-lg';
-  };
+  const bodySize = {
+    normal: 'text-[17px] sm:text-[19px]',
+    large: 'text-[19px] sm:text-[21px]',
+    extra: 'text-[21px] sm:text-[24px]',
+  }[readingFontSize];
+
+  const actionBtn = (active: boolean, activeCls: string) =>
+    `group relative grid place-items-center w-11 h-11 rounded-full transition-all ${
+      active ? activeCls : 'text-brand-text-secondary hover:text-brand-text-primary hover:bg-brand-border-light'
+    }`;
 
   return (
-    <div className="relative animate-fade-in text-left pb-24">
-      
-      {/* 1. Thin Reading Progress Bar */}
-      <div 
-        className="fixed top-16 md:top-20 left-0 h-[4px] bg-gradient-to-r from-purple-600 via-indigo-600 to-cyan-400 z-50 transition-all duration-100"
-        style={{ width: `${scrollPercent}%` }}
+    <div className="relative text-left pb-28">
+      {/* Reading progress bar */}
+      <motion.div
+        className="fixed top-0 left-0 right-0 h-[3px] bg-gradient-to-r from-violet-600 via-fuchsia-500 to-cyan-400 z-[45] origin-left"
+        style={{ scaleX: progress }}
       />
 
-      {/* 2. Top Large Cover Image */}
-      <div className="relative w-full h-[320px] sm:h-[420px] md:h-[480px] bg-slate-900 overflow-hidden">
-        <img 
-          src={story.coverImage} 
-          alt={story.title} 
-          referrerPolicy="no-referrer"
-          className="w-full h-full object-cover opacity-85 hover:scale-105 transition-transform duration-10000 cursor-pointer"
-          onClick={() => setLightboxImage(story.coverImage)}
-          title="Click to view full screen"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-brand-bg via-transparent to-black/35 pointer-events-none" />
-        
-        {/* Back navigation pill */}
-        <button
-          onClick={() => navigateTo('/home')}
-          className="absolute top-6 left-6 inline-flex items-center gap-2 px-4 py-2 bg-brand-surface/85 border border-brand-border backdrop-blur text-brand-text-primary text-xs font-semibold rounded-full shadow-md hover:bg-brand-surface transition-all"
-        >
-          <ArrowLeft className="w-4 h-4" /> Feed
-        </button>
-      </div>
+      {/* =============== Header =============== */}
+      <header className="relative pt-10 sm:pt-14 pb-10 overflow-hidden">
+        <div className="pointer-events-none absolute -top-40 left-1/2 -translate-x-1/2 w-[900px] h-[420px] bg-gradient-to-b from-violet-500/15 via-fuchsia-500/5 to-transparent blur-3xl rounded-full" />
+        <div className="relative max-w-3xl mx-auto px-5 sm:px-6">
+          <motion.button
+            initial={{ opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            onClick={() => (window.history.length > 1 ? window.history.back() : navigateTo('/home'))}
+            className="group inline-flex items-center gap-1.5 text-sm font-medium text-brand-text-tertiary hover:text-brand-text-primary transition-colors mb-8"
+          >
+            <ArrowLeft className="w-4 h-4 transition-transform group-hover:-translate-x-0.5" /> Back
+          </motion.button>
 
-      {/* 3. Main Reading Grid (Sidebar Action Sidebar + Center Content Container) */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-20 relative">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 pt-8">
-          
-          {/* Left Sticky Toolbar (Desktop Only) */}
-          <div className="hidden lg:block lg:col-span-2 relative">
-            <div className="sticky top-28 flex flex-col items-center gap-5 p-4 border border-brand-border bg-brand-surface rounded-2xl shadow-sm text-center">
-              <p className="text-[10px] font-bold text-brand-text-tertiary uppercase tracking-wider">READING INDEX</p>
-              <div className="text-2xl font-black text-brand-primary">{scrollPercent}%</div>
-              
-              <div className="w-full border-t border-brand-border-light my-1" />
-
-              {/* Like trigger */}
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <div className="flex flex-wrap items-center gap-2 mb-5">
               <button
-                onClick={() => toggleLike(story.id)}
-                className={`p-3 rounded-full border transition-all ${
-                  isLiked 
-                    ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/40 dark:border-rose-900/40 dark:text-rose-400 scale-110' 
-                    : 'bg-transparent border-brand-border text-brand-text-secondary hover:text-rose-600 hover:bg-rose-50/50'
-                }`}
-                title="Like article"
+                onClick={() => navigateTo(`/explore/${story.category}`)}
+                className="text-xs font-semibold uppercase tracking-wider px-3 py-1.5 rounded-full bg-brand-primary-light text-brand-primary dark:text-violet-300 hover:brightness-95 transition"
               >
-                <Heart className={`w-5 h-5 ${isLiked ? 'fill-current' : ''}`} />
-              </button>
-              <span className="text-xs font-bold text-brand-text-secondary -mt-3">{story.likes} likes</span>
-
-              {/* Bookmark trigger */}
-              <button
-                onClick={() => toggleBookmark(story.id)}
-                className={`p-3 rounded-full border transition-all ${
-                  isBookmarked 
-                    ? 'bg-purple-50 border-purple-200 text-brand-primary dark:bg-purple-950/40 dark:border-purple-900/40 dark:text-purple-300' 
-                    : 'bg-transparent border-brand-border text-brand-text-secondary hover:text-brand-primary hover:bg-brand-primary-light/50'
-                }`}
-                title="Bookmark article"
-              >
-                <Bookmark className={`w-5 h-5 ${isBookmarked ? 'fill-current' : ''}`} />
-              </button>
-              <span className="text-[10px] text-brand-text-tertiary -mt-3">Save</span>
-
-              {/* Share trigger */}
-              <button
-                onClick={handleShare}
-                className="p-3 rounded-full border border-brand-border text-brand-text-secondary hover:text-brand-accent hover:bg-brand-accent-light/30 transition-all"
-                title="Share link"
-              >
-                <Share2 className="w-5 h-5" />
-              </button>
-              <span className="text-[10px] text-brand-text-tertiary -mt-3">Share</span>
-            </div>
-          </div>
-
-          {/* Center Column: Actual Content Body */}
-          <div className="lg:col-span-8 max-w-[680px] mx-auto w-full">
-            
-            {/* Header Data */}
-            <div className="mb-6">
-              <span className="bg-brand-primary-light text-brand-primary dark:bg-purple-950/60 dark:text-purple-300 text-xs font-bold uppercase tracking-wider px-3.5 py-1.5 rounded-full">
                 {story.category}
-              </span>
+              </button>
+              {story.isResearch && (
+                <span className="text-xs font-semibold uppercase tracking-wider px-3 py-1.5 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">
+                  Research
+                </span>
+              )}
+              {story.isCampaign && (
+                <span className="text-xs font-semibold uppercase tracking-wider px-3 py-1.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
+                  Campaign
+                </span>
+              )}
             </div>
 
-            <h1 className="font-display font-black text-3xl sm:text-4xl md:text-5xl text-brand-text-primary leading-tight tracking-tight mb-6">
+            <h1 className="font-display font-bold text-[34px] leading-[1.1] sm:text-5xl md:text-[56px] text-brand-text-primary tracking-[-0.025em] mb-5">
               {story.title}
             </h1>
 
-            {/* Whistleblower Safeguard details */}
+            {showDek && (
+              <p className="text-lg sm:text-xl text-brand-text-secondary leading-relaxed mb-8">{excerpt}</p>
+            )}
+
+            {/* Author + meta */}
+            <div className="flex flex-wrap items-center justify-between gap-4 pt-6 border-t border-brand-border-light">
+              <div className="flex items-center gap-3 min-w-0">
+                <button
+                  disabled={story.isAnonymous}
+                  onClick={() => navigateTo(`/profile/${story.author.username}`)}
+                  className="rounded-full"
+                >
+                  <Avatar src={story.author?.avatar} name={authorName} anonymous={story.isAnonymous} className="w-11 h-11" />
+                </button>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-semibold text-brand-text-primary truncate">{authorName}</span>
+                    {!story.isAnonymous && (
+                      <button
+                        onClick={handleToggleFollow}
+                        className={`text-xs font-semibold transition-colors ${isFollowing ? 'text-brand-text-tertiary' : 'text-brand-primary hover:underline underline-offset-4'}`}
+                      >
+                        · {isFollowing ? 'Following' : 'Follow'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 text-xs text-brand-text-tertiary mt-0.5">
+                    <span className="inline-flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> {formattedDate}</span>
+                    <span className="inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> {story.readingTime} min read</span>
+                  </div>
+                </div>
+              </div>
+
+              {story.doi && (
+                <div className="text-right">
+                  <p className="text-[10px] font-semibold tracking-wider text-brand-text-tertiary uppercase">DOI</p>
+                  <p className="text-xs font-mono text-brand-primary font-semibold">{story.doi}</p>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      </header>
+
+      {/* =============== Cover =============== */}
+      {story.coverImage && (
+        <motion.figure
+          initial={{ opacity: 0, y: 20, scale: 0.98 }}
+          animate={{ opacity: 1, y: 0, scale: 1 }}
+          transition={{ duration: 0.8, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+          className="relative max-w-5xl mx-auto px-0 sm:px-6 mb-12"
+        >
+          <button
+            onClick={() => setLightboxImage(story.coverImage)}
+            className="group relative block w-full aspect-[16/9] sm:rounded-3xl overflow-hidden bg-brand-border-light shadow-lift"
+            aria-label="View cover image full screen"
+          >
+            <img
+              src={story.coverImage}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="w-full h-full object-cover transition-transform duration-[1.5s] ease-out group-hover:scale-[1.03]"
+            />
+            <span className="absolute bottom-4 right-4 grid place-items-center w-10 h-10 rounded-full bg-black/40 text-white backdrop-blur opacity-0 group-hover:opacity-100 transition-opacity">
+              <Maximize2 className="w-4 h-4" />
+            </span>
+          </button>
+        </motion.figure>
+      )}
+
+      {/* =============== Body =============== */}
+      <div className="relative max-w-6xl mx-auto px-5 sm:px-6">
+        <div className="lg:grid lg:grid-cols-[80px_minmax(0,1fr)_80px] lg:gap-8">
+          {/* Sticky action rail (desktop) */}
+          <aside className="hidden lg:block">
+            <div className="sticky top-28 flex flex-col items-center gap-1.5 p-2 rounded-full bg-brand-surface ring-1 ring-brand-border shadow-soft">
+              <motion.button
+                whileTap={{ scale: 0.85 }}
+                onClick={() => toggleLike(story.id)}
+                className={actionBtn(isLiked, 'text-rose-600 bg-rose-50 dark:bg-rose-500/15 dark:text-rose-400')}
+                aria-label="Like"
+                aria-pressed={isLiked}
+              >
+                <Heart className={`w-5 h-5 ${isLiked ? 'fill-current' : ''}`} />
+              </motion.button>
+              <span className="text-[11px] font-semibold tabular-nums text-brand-text-tertiary -mt-1 mb-1">{story.likes}</span>
+              <motion.button
+                whileTap={{ scale: 0.85 }}
+                onClick={() => toggleBookmark(story.id)}
+                className={actionBtn(isBookmarked, 'text-brand-primary bg-violet-50 dark:bg-violet-500/15 dark:text-violet-300')}
+                aria-label="Bookmark"
+                aria-pressed={isBookmarked}
+              >
+                <Bookmark className={`w-5 h-5 ${isBookmarked ? 'fill-current' : ''}`} />
+              </motion.button>
+              <button onClick={() => setIsShareModalOpen(true)} className={actionBtn(false, '')} aria-label="Share">
+                <Share2 className="w-5 h-5" />
+              </button>
+              {synth && (
+                <button
+                  onClick={() => {
+                    setIsNarratorOpen(true);
+                    if (!isPlaying) speakFrom(chunkIdx);
+                  }}
+                  className={actionBtn(isNarratorOpen, 'text-brand-primary bg-violet-50 dark:bg-violet-500/15 dark:text-violet-300')}
+                  aria-label="Listen to this story"
+                >
+                  <Headphones className="w-5 h-5" />
+                </button>
+              )}
+              <div className="w-6 h-px bg-brand-border my-1" />
+              <span className="text-[11px] font-semibold tabular-nums text-brand-primary py-1">{percent}%</span>
+            </div>
+          </aside>
+
+          {/* Article column */}
+          <div className="max-w-[700px] w-full mx-auto">
             {story.isAnonymous && (
-              <div className="flex items-center gap-3 p-4 bg-amber-50 border border-amber-100 text-amber-800 rounded-2xl text-xs mb-8 dark:bg-amber-950/30 dark:border-amber-900/40 dark:text-amber-300">
-                <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0" />
-                <div>
-                  <p className="font-bold">Whistleblower Safety Shield Verified</p>
-                  <p className="opacity-90">The metadata for this publication has been cryptographically scrubbed by VYRA core systems to protect the independent source's identity.</p>
+              <div className="flex items-start gap-3 p-4 mb-8 rounded-2xl bg-emerald-50 ring-1 ring-emerald-200/70 text-emerald-900 dark:bg-emerald-500/10 dark:ring-emerald-500/20 dark:text-emerald-200">
+                <ShieldCheck className="w-5 h-5 shrink-0 mt-0.5 text-emerald-600 dark:text-emerald-400" />
+                <div className="text-sm">
+                  <p className="font-semibold">Identity protected</p>
+                  <p className="opacity-80 mt-0.5">
+                    Metadata for this publication was removed to protect the source's identity.
+                  </p>
                 </div>
               </div>
             )}
 
-            {/* Reading Preferences & Audio Narration Dashboard */}
-            <div className="bg-brand-surface dark:bg-slate-900 border border-brand-border rounded-2xl p-4.5 mb-8 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all">
-              <div className="flex items-center gap-3.5 text-left">
-                <div className="p-2.5 bg-brand-primary-light dark:bg-purple-950 rounded-xl text-brand-primary dark:text-purple-300">
-                  <Volume2 className="w-5 h-5" />
-                </div>
-                <div>
-                  <p className="text-xs font-bold text-brand-text-primary">Listen to Investigative Report</p>
-                  <p className="text-[10px] text-brand-text-secondary">Synthesized narration audio feed for hands-free reading</p>
-                </div>
-              </div>
-              
-              <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
-                {/* Font Size Selector */}
-                <div className="flex items-center gap-1">
-                  <span className="text-[10px] font-bold text-brand-text-tertiary uppercase hidden sm:inline mr-1">Scale:</span>
-                  <div className="flex items-center border border-brand-border rounded-xl p-0.5 bg-brand-bg dark:bg-slate-950">
-                    <button 
-                      onClick={() => { setReadingFontSize('normal'); showToast('Text scale: Standard', 'info'); }}
-                      className={`px-2 py-1 text-xs font-bold rounded-lg transition-all ${readingFontSize === 'normal' ? 'bg-brand-surface dark:bg-slate-800 text-brand-primary dark:text-purple-300 shadow-sm' : 'text-brand-text-tertiary hover:text-brand-text-secondary'}`}
-                      title="Standard Text"
-                    >
-                      A
-                    </button>
-                    <button 
-                      onClick={() => { setReadingFontSize('large'); showToast('Text scale: Large', 'info'); }}
-                      className={`px-2.5 py-1 text-sm font-bold rounded-lg transition-all ${readingFontSize === 'large' ? 'bg-brand-surface dark:bg-slate-800 text-brand-primary dark:text-purple-300 shadow-sm' : 'text-brand-text-tertiary hover:text-brand-text-secondary'}`}
-                      title="Large Text"
-                    >
-                      A+
-                    </button>
-                    <button 
-                      onClick={() => { setReadingFontSize('extra'); showToast('Text scale: Extra Large', 'info'); }}
-                      className={`px-3 py-1 text-base font-bold rounded-lg transition-all ${readingFontSize === 'extra' ? 'bg-brand-surface dark:bg-slate-800 text-brand-primary dark:text-purple-300 shadow-sm' : 'text-brand-text-tertiary hover:text-brand-text-secondary'}`}
-                      title="Extra Large Text"
-                    >
-                      A++
-                    </button>
-                  </div>
-                </div>
-
-                {/* Narrator Play Trigger */}
+            {/* Reading tools */}
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-10 p-2 pl-4 rounded-2xl bg-brand-surface ring-1 ring-brand-border shadow-soft">
+              {synth ? (
                 <button
                   onClick={() => {
                     setIsNarratorOpen(true);
-                    setIsPlaying(true);
-                    showToast(`Broadcasting with ${narrationVoice} Voice accent...`, 'success');
+                    isPlaying ? stopSpeech() : speakFrom(chunkIdx);
                   }}
-                  className="px-4 py-2 bg-brand-primary hover:bg-brand-primary-hover text-white text-xs font-bold rounded-xl shadow-sm flex items-center gap-1.5 transition-all"
+                  className="group inline-flex items-center gap-3 text-left"
                 >
-                  <Play className="w-3.5 h-3.5 fill-current" /> Listen
+                  <span className="grid place-items-center w-9 h-9 rounded-full bg-brand-gradient text-white shadow-glow transition-transform group-hover:scale-105">
+                    {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+                  </span>
+                  <span>
+                    <span className="block text-sm font-semibold text-brand-text-primary">
+                      {isPlaying ? 'Listening…' : 'Listen to this story'}
+                    </span>
+                    <span className="block text-xs text-brand-text-tertiary">{story.readingTime} min · read aloud by your device</span>
+                  </span>
                 </button>
-              </div>
-            </div>
+              ) : (
+                <span className="text-sm text-brand-text-tertiary">Reading options</span>
+              )}
 
-            {/* Author Row details */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-y border-brand-border-light py-5 mb-10 gap-4">
-              <div className="flex items-center gap-3.5">
-                <img 
-                  src={story.author.avatar} 
-                  alt={story.author.name} 
-                  className="w-12 h-12 rounded-full object-cover border border-brand-border"
-                />
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h4 className="text-sm font-bold text-brand-text-primary">
-                      {story.isAnonymous ? 'Anonymous Contributor' : story.author.name}
-                    </h4>
-                    {!story.isAnonymous && (
-                      <button 
-                        onClick={handleToggleFollow}
-                        className={`text-[10px] font-bold uppercase px-2.5 py-0.5 rounded border transition-colors ${
-                          isFollowing 
-                            ? 'bg-brand-border-light text-brand-text-secondary border-brand-border' 
-                            : 'bg-transparent text-brand-primary border-brand-primary hover:bg-brand-primary hover:text-white'
-                        }`}
-                      >
-                        {isFollowing ? 'Following' : 'Follow'}
-                      </button>
+              <div className="flex items-center gap-1 p-1 rounded-xl bg-brand-bg ring-1 ring-brand-border" role="group" aria-label="Text size">
+                {(['normal', 'large', 'extra'] as FontSize[]).map((size, i) => (
+                  <button
+                    key={size}
+                    onClick={() => setReadingFontSize(size)}
+                    aria-pressed={readingFontSize === size}
+                    className={`relative h-8 px-2.5 rounded-lg font-semibold transition-colors ${
+                      readingFontSize === size ? 'text-brand-primary' : 'text-brand-text-tertiary hover:text-brand-text-secondary'
+                    }`}
+                    style={{ fontSize: 12 + i * 2.5 }}
+                    title={`${size} text`}
+                  >
+                    {readingFontSize === size && (
+                      <motion.span layoutId="font-pill" className="absolute inset-0 rounded-lg bg-brand-surface shadow-soft ring-1 ring-brand-border" />
                     )}
-                  </div>
-                  <p className="text-xs text-brand-text-tertiary mt-0.5">
-                    {formattedDate} • <span className="inline-flex items-center gap-1"><Clock className="w-3.5 h-3.5" /> {story.readingTime} min read</span>
-                  </p>
-                </div>
-              </div>
-
-              {/* Action Buttons & DOI Column */}
-              <div className="flex items-center justify-between sm:justify-end gap-4 sm:text-right">
-                {/* Mobile/Tablet Toolbar Actions (Hidden on large desktop where sticky panel is active) */}
-                <div className="flex lg:hidden items-center gap-2">
-                  <button 
-                    onClick={() => toggleLike(story.id)}
-                    className={`p-2.5 rounded-xl border flex items-center gap-1.5 text-xs font-bold transition-all ${
-                      isLiked 
-                        ? 'bg-rose-50 border-rose-200 text-rose-600 dark:bg-rose-950/30 dark:border-rose-900/40 dark:text-rose-400' 
-                        : 'bg-brand-surface border-brand-border text-brand-text-secondary hover:text-rose-600'
-                    }`}
-                    title="Like publication"
-                  >
-                    <Heart className={`w-4 h-4 ${isLiked ? 'fill-current' : ''}`} />
-                    <span>{story.likes}</span>
+                    <span className="relative">A</span>
                   </button>
-                  <button 
-                    onClick={() => toggleBookmark(story.id)}
-                    className={`p-2.5 rounded-xl border flex items-center gap-1.5 text-xs font-bold transition-all ${
-                      isBookmarked 
-                        ? 'bg-purple-50 border-purple-200 text-brand-primary dark:bg-purple-950/30 dark:border-purple-900/40 dark:text-purple-300' 
-                        : 'bg-brand-surface border-brand-border text-brand-text-secondary hover:text-brand-primary'
-                    }`}
-                    title="Bookmark publication"
-                  >
-                    <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-current' : ''}`} />
-                  </button>
-                  <button 
-                    onClick={handleShare}
-                    className="p-2.5 rounded-xl border border-brand-border bg-brand-surface text-brand-text-secondary hover:text-brand-accent hover:border-brand-accent/40 flex items-center gap-1.5 text-xs font-bold"
-                    title="Share publication"
-                  >
-                    <Share2 className="w-4 h-4" />
-                    <span className="hidden xs:inline">Share</span>
-                  </button>
-                </div>
-
-                {story.doi && (
-                  <div className="flex flex-col items-end text-right">
-                    <span className="text-[9px] font-bold text-brand-text-tertiary">PEER REVIEWED DOI</span>
-                    <span className="text-xs font-mono text-brand-primary font-semibold">{story.doi}</span>
-                  </div>
-                )}
+                ))}
               </div>
             </div>
 
-            {/* 4. Styled Publication Markdown Content */}
-            <article className="prose dark:prose-invert max-w-none text-brand-text-primary">
-              <p className="text-lg sm:text-xl leading-relaxed font-normal text-brand-text-secondary mb-8 italic border-l-4 border-brand-primary pl-4 py-1">
-                {story.excerpt}
-              </p>
+            {/* Mobile actions */}
+            <div className="flex lg:hidden items-center gap-2 mb-8">
+              <button
+                onClick={() => toggleLike(story.id)}
+                className={`inline-flex items-center gap-1.5 h-10 px-4 rounded-full ring-1 text-sm font-semibold transition-colors ${
+                  isLiked ? 'ring-rose-200 bg-rose-50 text-rose-600 dark:ring-rose-500/30 dark:bg-rose-500/15 dark:text-rose-400' : 'ring-brand-border text-brand-text-secondary'
+                }`}
+              >
+                <Heart className={`w-4 h-4 ${isLiked ? 'fill-current' : ''}`} /> {story.likes}
+              </button>
+              <button
+                onClick={() => toggleBookmark(story.id)}
+                aria-label="Bookmark"
+                className={`grid place-items-center w-10 h-10 rounded-full ring-1 transition-colors ${
+                  isBookmarked ? 'ring-violet-200 bg-violet-50 text-brand-primary dark:ring-violet-500/30 dark:bg-violet-500/15 dark:text-violet-300' : 'ring-brand-border text-brand-text-secondary'
+                }`}
+              >
+                <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-current' : ''}`} />
+              </button>
+              <button
+                onClick={() => setIsShareModalOpen(true)}
+                className="inline-flex items-center gap-1.5 h-10 px-4 rounded-full ring-1 ring-brand-border text-sm font-semibold text-brand-text-secondary"
+              >
+                <Share2 className="w-4 h-4" /> Share
+              </button>
+            </div>
 
-              {/* Rendering formatted HTML text blocks split up for professional look */}
-              <div className={`text-brand-text-primary leading-relaxed ${getFontSizeClass()} font-sans space-y-6`}>
-                
-                {/* Simulated Article Body parsing */}
-                {story.content.startsWith('##') ? (
-                  // Display real prewritten markdown structures neatly
-                  <div className="space-y-6 text-left">
-                    {story.content.split('\n\n').map((block, idx) => {
-                      if (block.startsWith('##')) {
-                        return <h2 key={idx} className="font-display font-bold text-2xl sm:text-3xl text-brand-text-primary mt-10 mb-4">{block.replace('##', '').trim()}</h2>;
-                      }
-                      if (block.startsWith('###')) {
-                        return <h3 key={idx} className="font-display font-semibold text-xl text-brand-text-primary mt-8 mb-3">{block.replace('###', '').trim()}</h3>;
-                      }
-                      if (block.startsWith('>')) {
-                        return (
-                          <blockquote key={idx} className="border-l-4 border-brand-primary bg-brand-primary-light/30 dark:bg-brand-primary-light/5 p-5 rounded-r-xl my-6 text-brand-text-secondary italic">
-                            {block.replace(/>/g, '').replace(/\*/g, '').trim()}
-                          </blockquote>
-                        );
-                      }
-                      if (block.startsWith('-') || block.startsWith('*')) {
-                        return (
-                          <ul key={idx} className="list-disc pl-6 space-y-2 text-brand-text-secondary my-4">
-                            {block.split('\n').map((li, lIdx) => (
-                              <li key={lIdx}>{li.replace(/[-*]/, '').trim()}</li>
-                            ))}
-                          </ul>
-                        );
-                      }
-                      if (block.startsWith('1.')) {
-                        return (
-                          <ol key={idx} className="list-decimal pl-6 space-y-2 text-brand-text-secondary my-4">
-                            {block.split('\n').map((li, lIdx) => (
-                              <li key={lIdx}>{li.replace(/^\d+\./, '').trim()}</li>
-                            ))}
-                          </ol>
-                        );
-                      }
-                      if (block.startsWith('```')) {
-                        return (
-                          <pre key={idx} className="bg-slate-900 text-slate-100 p-5 rounded-xl font-mono text-xs overflow-x-auto leading-relaxed border border-slate-800">
-                            <code>{block.replace(/```/g, '').trim()}</code>
-                          </pre>
-                        );
-                      }
-                      // Regular paragraph with bolding parser
-                      return (
-                        <p key={idx} className="leading-relaxed">
-                          {block.split('**').map((part, pIdx) => 
-                            pIdx % 2 === 1 ? <strong key={pIdx} className="font-semibold text-brand-text-primary">{part}</strong> : part
-                          )}
-                        </p>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p>{story.content}</p>
-                )}
-              </div>
+            {/* Markdown body */}
+            <article className={`${bodySize} leading-[1.75] text-brand-text-primary/90 font-sans [&>*:first-child]:mt-0`}>
+              <ReactMarkdown
+                components={{
+                  h1: ({ children }) => <h2 className="font-display font-bold text-[1.6em] leading-tight text-brand-text-primary mt-12 mb-4">{children}</h2>,
+                  h2: ({ children }) => <h2 className="font-display font-bold text-[1.45em] leading-tight text-brand-text-primary mt-12 mb-4">{children}</h2>,
+                  h3: ({ children }) => <h3 className="font-display font-semibold text-[1.2em] text-brand-text-primary mt-10 mb-3">{children}</h3>,
+                  p: ({ children }) => <p className="my-6">{children}</p>,
+                  img: ({ src, alt }) => (
+                    <button type="button" onClick={() => src && setLightboxImage(String(src))} className="block w-full my-10 group">
+                      <img src={src as string} alt={alt || ''} loading="lazy" className="block w-full rounded-2xl ring-1 ring-brand-border group-hover:shadow-lift transition-shadow" />
+                      {alt && <span className="block mt-3 text-center text-sm text-brand-text-tertiary">{alt}</span>}
+                    </button>
+                  ),
+                  blockquote: ({ children }) => (
+                    <blockquote className="relative my-10 pl-6 border-l-[3px] border-brand-primary text-[1.12em] font-display italic text-brand-text-primary [&>p]:my-2">
+                      {children}
+                    </blockquote>
+                  ),
+                  ul: ({ children }) => <ul className="list-disc marker:text-brand-primary pl-6 space-y-2.5 my-6">{children}</ul>,
+                  ol: ({ children }) => <ol className="list-decimal marker:text-brand-primary marker:font-semibold pl-6 space-y-2.5 my-6">{children}</ol>,
+                  a: ({ href, children }) => (
+                    <a href={href} target="_blank" rel="noreferrer" className="text-brand-primary font-medium underline decoration-brand-primary/30 underline-offset-4 hover:decoration-brand-primary transition-colors">
+                      {children}
+                    </a>
+                  ),
+                  strong: ({ children }) => <strong className="font-semibold text-brand-text-primary">{children}</strong>,
+                  hr: () => <div className="my-12 text-center text-brand-text-tertiary tracking-[1em]">···</div>,
+                  code: ({ children, className }) =>
+                    className ? (
+                      <code className={className}>{children}</code>
+                    ) : (
+                      <code className="px-1.5 py-0.5 rounded-md bg-brand-border-light text-[0.88em] font-mono text-brand-primary">{children}</code>
+                    ),
+                  pre: ({ children }) => (
+                    <pre className="my-8 bg-[#0d1117] text-slate-100 p-5 rounded-2xl font-mono text-sm overflow-x-auto leading-relaxed ring-1 ring-white/10">
+                      {children}
+                    </pre>
+                  ),
+                }}
+              >
+                {story.content}
+              </ReactMarkdown>
             </article>
 
-            {/* 5. Mock Embedded Video Player (YouTube Education) */}
             {story.id === 'story-1' && (
-              <div className="my-10">
-                <p className="text-xs font-bold text-brand-text-tertiary mb-3 uppercase tracking-wider">Related Video Seminar</p>
-                <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-slate-900 border border-brand-border shadow-md">
-                  <iframe 
-                    width="100%" 
-                    height="100%" 
-                    src="https://www.youtube.com/embed/g-GbT_D6m38" 
-                    title="Quantum Computing Seminar" 
-                    frameBorder="0" 
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" 
+              <div className="my-12">
+                <p className="text-xs font-semibold text-brand-text-tertiary mb-3 uppercase tracking-wider">Related video</p>
+                <div className="relative aspect-video w-full rounded-2xl overflow-hidden bg-slate-900 ring-1 ring-brand-border shadow-soft">
+                  <iframe
+                    src="https://www.youtube.com/embed/g-GbT_D6m38"
+                    title="Related video"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                     allowFullScreen
                     className="absolute inset-0 w-full h-full"
                   />
@@ -462,260 +520,292 @@ export const StoryReadingPage: React.FC = () => {
               </div>
             )}
 
-            {/* 6. Attachments (if any) */}
+            {/* Tags */}
+            {story.tags?.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-12">
+                {story.tags.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => navigateTo(`/explore?tag=${t}`)}
+                    className="h-9 px-4 rounded-full bg-brand-border-light text-sm font-medium text-brand-text-secondary hover:text-brand-primary hover:bg-brand-primary-light transition-colors"
+                  >
+                    #{t}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Attachments */}
             {story.hasAttachments && story.attachments && (
-              <div className="mt-12 p-6 bg-brand-surface border border-brand-border rounded-2xl">
-                <h4 className="font-display font-bold text-sm text-brand-text-primary mb-4 flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-brand-primary" /> Verified Attachments & Data Sets
+              <div className="mt-12 p-6 rounded-3xl bg-brand-surface ring-1 ring-brand-border">
+                <h4 className="font-display font-semibold text-brand-text-primary mb-4 flex items-center gap-2">
+                  <FileText className="w-5 h-5 text-brand-primary" /> Attachments & data sets
                 </h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {story.attachments.map((file, idx) => (
-                    <div 
+                    <button
                       key={idx}
                       onClick={() => handleDownloadAttachment(file.name)}
-                      className="p-4 bg-brand-bg hover:bg-brand-primary-light/35 dark:hover:bg-brand-primary-light/10 border border-brand-border rounded-xl flex items-center justify-between cursor-pointer group transition-all"
+                      className="p-3.5 bg-brand-bg hover:bg-brand-border-light ring-1 ring-brand-border rounded-2xl flex items-center justify-between text-left group transition-colors"
                     >
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="p-2 bg-brand-primary/10 rounded-lg text-brand-primary">
+                        <div className="grid place-items-center w-10 h-10 bg-brand-primary-light rounded-xl text-brand-primary shrink-0">
                           <Download className="w-4 h-4" />
                         </div>
                         <div className="min-w-0">
-                          <p className="text-xs font-semibold text-brand-text-primary truncate group-hover:text-brand-primary">{file.name}</p>
-                          <p className="text-[10px] text-brand-text-tertiary font-mono">{file.size} • {file.type.toUpperCase()}</p>
+                          <p className="text-sm font-semibold text-brand-text-primary truncate">{file.name}</p>
+                          <p className="text-xs text-brand-text-tertiary font-mono">
+                            {file.size} · {file.type.toUpperCase()}
+                          </p>
                         </div>
                       </div>
                       <ChevronRight className="w-4 h-4 text-brand-text-tertiary group-hover:translate-x-1 transition-transform" />
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
             )}
 
-            {/* 7. Author Biography Card */}
-            <div className="mt-14 p-6 sm:p-8 bg-brand-surface border border-brand-border rounded-2xl flex flex-col sm:flex-row gap-5 items-start">
-              <img 
-                src={story.author.avatar} 
-                alt={story.author.name} 
-                className="w-16 h-16 rounded-full object-cover border border-brand-border shrink-0"
-              />
-              <div className="flex-1 text-left min-w-0">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
+            {/* End-of-article actions */}
+            <div className="flex items-center justify-between gap-4 mt-14 py-5 border-y border-brand-border-light">
+              <div className="flex items-center gap-2">
+                <motion.button
+                  whileTap={{ scale: 0.9 }}
+                  onClick={() => toggleLike(story.id)}
+                  className={`inline-flex items-center gap-2 h-11 px-5 rounded-full font-semibold text-sm transition-colors ${
+                    isLiked ? 'bg-rose-50 text-rose-600 dark:bg-rose-500/15 dark:text-rose-400' : 'bg-brand-border-light text-brand-text-secondary hover:text-rose-600'
+                  }`}
+                >
+                  <Heart className={`w-4 h-4 ${isLiked ? 'fill-current' : ''}`} /> {isLiked ? 'Liked' : 'Like'} · {story.likes}
+                </motion.button>
+                <button
+                  onClick={() => toggleBookmark(story.id)}
+                  aria-label="Bookmark"
+                  className={`grid place-items-center w-11 h-11 rounded-full transition-colors ${
+                    isBookmarked ? 'bg-violet-50 text-brand-primary dark:bg-violet-500/15 dark:text-violet-300' : 'bg-brand-border-light text-brand-text-secondary hover:text-brand-primary'
+                  }`}
+                >
+                  <Bookmark className={`w-4 h-4 ${isBookmarked ? 'fill-current' : ''}`} />
+                </button>
+              </div>
+              <button
+                onClick={() => setIsShareModalOpen(true)}
+                className="inline-flex items-center gap-2 h-11 px-5 rounded-full bg-brand-text-primary text-brand-surface font-semibold text-sm hover:opacity-90 transition-opacity"
+              >
+                <Share2 className="w-4 h-4" /> Share
+              </button>
+            </div>
+
+            {/* Author card */}
+            <div className="mt-10 p-6 sm:p-8 rounded-3xl bg-brand-surface ring-1 ring-brand-border flex flex-col sm:flex-row gap-5 items-start">
+              <Avatar src={story.author?.avatar} name={authorName} anonymous={story.isAnonymous} className="w-16 h-16" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold uppercase tracking-wider text-brand-text-tertiary">Written by</p>
+                <div className="flex flex-wrap items-center justify-between gap-3 mt-1 mb-2">
                   <div>
-                    <h4 className="text-base font-bold text-brand-text-primary">
-                      Published By {story.isAnonymous ? 'Anonymous' : story.author.name}
-                    </h4>
-                    <p className="text-xs text-brand-text-tertiary">
-                      {story.isAnonymous ? 'Safeguarded Columnist' : `@${story.author.username}`}
-                    </p>
+                    <h4 className="font-display text-lg font-semibold text-brand-text-primary">{authorName}</h4>
+                    {!story.isAnonymous && <p className="text-sm text-brand-text-tertiary">@{story.author.username}</p>}
                   </div>
                   {!story.isAnonymous && (
-                    <button 
+                    <button
                       onClick={handleToggleFollow}
-                      className={`text-xs font-semibold py-1.5 px-4 rounded-xl border transition-all ${
-                        isFollowing 
-                          ? 'bg-brand-border-light text-brand-text-secondary border-brand-border' 
-                          : 'bg-brand-primary text-white border-brand-primary hover:bg-brand-primary-hover'
+                      className={`h-9 px-5 rounded-full text-sm font-semibold transition-all ${
+                        isFollowing ? 'ring-1 ring-brand-border text-brand-text-secondary' : 'bg-brand-gradient text-white shadow-glow'
                       }`}
                     >
-                      {isFollowing ? 'Following Scholar' : 'Follow Scholar'}
+                      {isFollowing ? 'Following' : 'Follow'}
                     </button>
                   )}
                 </div>
-                <p className="text-xs text-brand-text-secondary leading-relaxed">
-                  {story.isAnonymous 
-                    ? 'This author operates under the VYRA privacy shield to broadcast secure public-health records, industrial safety disclosures, or independent civic reviews safely.' 
-                    : story.author.bio
-                  }
+                <p className="text-sm text-brand-text-secondary leading-relaxed">
+                  {story.isAnonymous
+                    ? 'This author publishes under VYRA’s identity protection to share sensitive public-interest information safely.'
+                    : story.author.bio || 'Writer on VYRA.'}
                 </p>
               </div>
             </div>
 
-            {/* Comments Section */}
             <CommentsSection postId={story.id} postOwnerId={story.author.id} allowComments={story.allowComments !== false} />
-
-            {/* 8. Related Stories Row */}
-            {relatedStories.length > 0 && (
-              <div className="mt-16 pt-12 border-t border-brand-border">
-                <h4 className="font-display font-bold text-lg text-brand-text-primary mb-6">Related Disciplines</h4>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
-                  {relatedStories.map(related => (
-                    <StoryCard key={related.id} story={related} variant="compact" />
-                  ))}
-                </div>
-              </div>
-            )}
-
           </div>
 
+          <div className="hidden lg:block" />
         </div>
+
+        {/* Related */}
+        {relatedStories.length > 0 && (
+          <section className="mt-20 pt-12 border-t border-brand-border">
+            <h4 className="font-display font-bold text-2xl text-brand-text-primary mb-8">More in {story.category}</h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {relatedStories.map((related) => (
+                <StoryCard key={related.id} story={related} />
+              ))}
+            </div>
+          </section>
+        )}
       </div>
 
-      {/* 9. Full Screen Lightbox Modal Overlay */}
-      {lightboxImage && (
-        <div 
-          className="fixed inset-0 bg-black/95 z-50 flex items-center justify-center p-4 animate-fade-in"
-          onClick={() => setLightboxImage(null)}
-        >
-          <button 
-            onClick={() => setLightboxImage(null)}
-            className="absolute top-6 right-6 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors"
+      {/* Back to top */}
+      <AnimatePresence>
+        {showBackToTop && !isNarratorOpen && (
+          <motion.button
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.8 }}
+            onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+            className="fixed right-5 bottom-24 md:bottom-8 z-40 grid place-items-center w-11 h-11 rounded-full bg-brand-surface ring-1 ring-brand-border shadow-lift text-brand-text-secondary hover:text-brand-primary"
+            aria-label="Back to top"
           >
-            <X className="w-6 h-6" />
-          </button>
-          <img 
-            src={lightboxImage} 
-            alt="Lightbox full size" 
-            className="max-w-full max-h-[90vh] object-contain rounded-lg shadow-2xl animate-scale-up"
-          />
-        </div>
-      )}
+            <ArrowUp className="w-5 h-5" />
+          </motion.button>
+        )}
+      </AnimatePresence>
 
-      {/* 10. Sticky Bottom Sovereign Audio Player */}
-      {isNarratorOpen && (
-        <div className="fixed bottom-0 inset-x-0 bg-brand-surface/95 dark:bg-slate-900/95 backdrop-blur-md border-t border-brand-border py-4 px-4 sm:px-6 md:px-8 z-50 shadow-2xl animate-slide-in-up transition-theme">
-          <div className="max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4">
-            
-            {/* Left info: Voice & Wave animation */}
-            <div className="flex items-center gap-4 w-full md:w-1/3 text-left">
-              <div className="relative w-12 h-12 bg-purple-100 dark:bg-purple-950/50 rounded-xl flex items-center justify-center text-brand-primary dark:text-purple-300 shrink-0">
-                {isPlaying ? (
-                  // Animated audio bars
-                  <div className="flex items-end gap-0.5 h-6">
-                    <div className="w-1 bg-brand-primary dark:bg-purple-400 rounded animate-audio-bar-1" style={{ animation: 'audio-pulse 0.6s infinite alternate' }} />
-                    <div className="w-1 bg-brand-primary dark:bg-purple-400 rounded animate-audio-bar-2" style={{ animation: 'audio-pulse 0.9s infinite alternate 0.15s' }} />
-                    <div className="w-1 bg-brand-primary dark:bg-purple-400 rounded animate-audio-bar-3" style={{ animation: 'audio-pulse 0.7s infinite alternate 0.3s' }} />
-                    <div className="w-1 bg-brand-primary dark:bg-purple-400 rounded animate-audio-bar-4" style={{ animation: 'audio-pulse 0.5s infinite alternate 0.1s' }} />
-                  </div>
-                ) : (
-                  <Volume2 className="w-6 h-6" />
-                )}
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs font-bold text-brand-text-primary truncate">{story.title}</p>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-[10px] font-mono text-brand-primary dark:text-purple-300 font-bold bg-brand-primary-light dark:bg-purple-950/40 px-1.5 py-0.5 rounded">
-                    Voice: {narrationVoice}
-                  </span>
-                  <span className="text-[10px] text-brand-text-tertiary">
-                    Section {currentSectionIdx + 1} of {paragraphs.length || 1}
-                  </span>
+      {/* Lightbox */}
+      <AnimatePresence>
+        {lightboxImage && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[70] flex items-center justify-center p-4"
+            onClick={() => setLightboxImage(null)}
+          >
+            <button
+              onClick={() => setLightboxImage(null)}
+              className="absolute top-5 right-5 grid place-items-center w-11 h-11 bg-white/10 hover:bg-white/20 rounded-full text-white transition-colors"
+              aria-label="Close"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <motion.img
+              initial={{ scale: 0.94, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.96, opacity: 0 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+              src={lightboxImage}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Narration player */}
+      <AnimatePresence>
+        {isNarratorOpen && synth && (
+          <motion.div
+            initial={{ y: 120, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 120, opacity: 0 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 32 }}
+            className="fixed z-[45] left-3 right-3 bottom-[88px] md:bottom-5 md:left-1/2 md:right-auto md:-translate-x-1/2 md:w-[680px]"
+          >
+            <div className="glass ring-1 ring-brand-border rounded-3xl shadow-lift p-3 sm:p-4">
+              <div className="flex items-center gap-3">
+                <div className="grid place-items-center w-11 h-11 rounded-2xl bg-brand-primary-light text-brand-primary shrink-0">
+                  {isPlaying ? (
+                    <div className="flex items-end gap-[3px] h-5">
+                      {[0.6, 0.9, 0.7, 0.5].map((d, i) => (
+                        <span key={i} className="w-[3px] bg-current rounded-full" style={{ animation: `audio-pulse ${d}s ${i * 0.12}s infinite alternate` }} />
+                      ))}
+                    </div>
+                  ) : (
+                    <Headphones className="w-5 h-5" />
+                  )}
+                </div>
+
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-semibold text-brand-text-primary truncate">{story.title}</p>
+                  <p className="text-xs text-brand-text-tertiary truncate italic">
+                    “{chunks[chunkIdx] || 'Ready to read aloud'}”
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-1 shrink-0">
+                  <button
+                    onClick={() => (isPlaying ? speakFrom(Math.max(0, chunkIdx - 1)) : setChunkIdx(Math.max(0, chunkIdx - 1)))}
+                    disabled={chunkIdx === 0}
+                    className="hidden sm:grid place-items-center w-9 h-9 rounded-full text-brand-text-secondary hover:bg-brand-border-light disabled:opacity-30"
+                    aria-label="Previous"
+                  >
+                    <SkipBack className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => (isPlaying ? stopSpeech() : speakFrom(chunkIdx))}
+                    className="grid place-items-center w-11 h-11 bg-brand-gradient text-white rounded-full shadow-glow active:scale-95 transition-transform"
+                    aria-label={isPlaying ? 'Pause' : 'Play'}
+                  >
+                    {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+                  </button>
+                  <button
+                    onClick={() => (isPlaying ? speakFrom(chunkIdx + 1) : setChunkIdx(Math.min(chunks.length - 1, chunkIdx + 1)))}
+                    disabled={chunkIdx >= chunks.length - 1}
+                    className="hidden sm:grid place-items-center w-9 h-9 rounded-full text-brand-text-secondary hover:bg-brand-border-light disabled:opacity-30"
+                    aria-label="Next"
+                  >
+                    <SkipForward className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      stopSpeech();
+                      setIsNarratorOpen(false);
+                    }}
+                    className="grid place-items-center w-9 h-9 rounded-full text-brand-text-tertiary hover:text-brand-text-primary hover:bg-brand-border-light"
+                    aria-label="Close player"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
-            </div>
 
-            {/* Middle: Caption display and Play controls */}
-            <div className="flex flex-col items-center gap-2 w-full md:w-2/5">
-              {/* Media button row */}
-              <div className="flex items-center gap-4">
-                <button 
-                  onClick={() => {
-                    setCurrentSectionIdx(prev => Math.max(0, prev - 1));
-                    showToast('Skipped back', 'info');
-                  }}
-                  disabled={currentSectionIdx === 0}
-                  className="p-1.5 hover:bg-brand-border-light dark:hover:bg-slate-800 disabled:opacity-30 rounded-lg text-brand-text-secondary"
-                  title="Previous Paragraph"
-                >
-                  <SkipBack className="w-4 h-4" />
-                </button>
-
-                <button 
-                  onClick={() => setIsPlaying(!isPlaying)}
-                  className="p-3 bg-brand-primary hover:bg-brand-primary-hover text-white rounded-full shadow-md transition-transform active:scale-95 flex items-center justify-center"
-                  title={isPlaying ? "Pause Narration" : "Resume Narration"}
-                >
-                  {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
-                </button>
-
-                <button 
-                  onClick={() => {
-                    if (currentSectionIdx < paragraphs.length - 1) {
-                      setCurrentSectionIdx(prev => prev + 1);
-                      showToast('Skipped forward', 'info');
-                    } else {
-                      showToast("Already at the end of the report", "info");
-                    }
-                  }}
-                  disabled={currentSectionIdx === paragraphs.length - 1}
-                  className="p-1.5 hover:bg-brand-border-light dark:hover:bg-slate-800 disabled:opacity-30 rounded-lg text-brand-text-secondary"
-                  title="Next Paragraph"
-                >
-                  <SkipForward className="w-4 h-4" />
-                </button>
-              </div>
-
-              {/* Scrolling Live Caption drawer */}
-              <div className="w-full bg-brand-bg dark:bg-slate-950 border border-brand-border/60 rounded-xl px-3 py-1.5 text-center text-[11px] text-brand-text-secondary font-medium italic truncate max-w-sm sm:max-w-md">
-                "{paragraphs[currentSectionIdx]?.replace(/[#*`>-]/g, '').trim() || 'Initializing synthesized narration...'}"
-              </div>
-            </div>
-
-            {/* Right: Narration preferences (Voice & Speed) + Close */}
-            <div className="flex items-center justify-between md:justify-end gap-3 w-full md:w-1/4">
-              
-              {/* Speed Controller */}
-              <div className="flex items-center gap-1">
-                <span className="text-[10px] text-brand-text-tertiary font-bold uppercase hidden xl:inline">Speed:</span>
-                <select 
-                  value={narrationSpeed}
+              <div className="mt-3 flex items-center gap-3">
+                <div className="flex-1 h-1 rounded-full bg-brand-border-light overflow-hidden">
+                  <motion.div
+                    className="h-full bg-brand-gradient rounded-full"
+                    animate={{ width: `${chunks.length ? ((chunkIdx + (isPlaying ? 0.5 : 0)) / chunks.length) * 100 : 0}%` }}
+                    transition={{ duration: 0.4 }}
+                  />
+                </div>
+                <select
+                  value={speed}
                   onChange={(e) => {
-                    const speed = parseFloat(e.target.value);
-                    setNarrationSpeed(speed);
-                    showToast(`Speed multiplier: ${speed}x`, 'info');
+                    const rate = parseFloat(e.target.value);
+                    setSpeed(rate);
+                    restartWith({ rate });
                   }}
-                  className="bg-brand-bg dark:bg-slate-950 border border-brand-border text-xs rounded-lg p-1 outline-none text-brand-text-secondary"
+                  className="h-7 bg-brand-bg ring-1 ring-brand-border text-xs rounded-lg px-1.5 outline-none text-brand-text-secondary"
+                  aria-label="Speed"
                 >
-                  <option value="0.75">0.75x</option>
-                  <option value="1">1.0x</option>
-                  <option value="1.25">1.25x</option>
-                  <option value="1.5">1.5x</option>
-                  <option value="2">2.0x</option>
+                  {[0.75, 1, 1.25, 1.5, 2].map((r) => (
+                    <option key={r} value={r}>{r}×</option>
+                  ))}
                 </select>
+                {voices.length > 0 && (
+                  <select
+                    value={voiceName}
+                    onChange={(e) => {
+                      setVoiceName(e.target.value);
+                      localStorage.setItem('vyra-voice', e.target.value);
+                      restartWith({ voice: e.target.value });
+                    }}
+                    className="h-7 max-w-[140px] bg-brand-bg ring-1 ring-brand-border text-xs rounded-lg px-1.5 outline-none text-brand-text-secondary"
+                    aria-label="Voice"
+                  >
+                    <option value="">Default voice</option>
+                    {voices.map((v) => (
+                      <option key={v.name} value={v.name}>{v.name.replace(/^(Microsoft|Google)\s/, '')}</option>
+                    ))}
+                  </select>
+                )}
               </div>
-
-              {/* Voice Selector */}
-              <div className="flex items-center gap-1 border-r border-brand-border pr-2 mr-1">
-                <span className="text-[10px] text-brand-text-tertiary font-bold uppercase hidden xl:inline">Voice:</span>
-                <select 
-                  value={narrationVoice}
-                  onChange={(e) => {
-                    setNarrationVoice(e.target.value);
-                    showToast(`Accent loaded: ${e.target.value}`, 'success');
-                  }}
-                  className="bg-brand-bg dark:bg-slate-950 border border-brand-border text-xs rounded-lg p-1 outline-none text-brand-text-secondary"
-                >
-                  <option value="Aura">Aura (Synthetic)</option>
-                  <option value="Veritas">Veritas (Inquiry)</option>
-                  <option value="Calm">Calm (Academic)</option>
-                </select>
-              </div>
-
-              {/* Close audio session */}
-              <button 
-                onClick={() => {
-                  setIsPlaying(false);
-                  setIsNarratorOpen(false);
-                  showToast('Closed audio narration session', 'info');
-                }}
-                className="p-1.5 hover:bg-brand-border-light dark:hover:bg-slate-800 rounded-lg text-brand-text-tertiary hover:text-brand-text-secondary"
-                title="Exit player"
-              >
-                <X className="w-5 h-5" />
-              </button>
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
-          </div>
-        </div>
-      )}
-
-      {/* 11. Social Sharing & Snippet Copy Modal */}
-      <ShareModal 
-        story={story} 
-        isOpen={isShareModalOpen} 
-        onClose={() => setIsShareModalOpen(false)} 
-        showToast={showToast} 
-      />
-
+      <ShareModal story={story} isOpen={isShareModalOpen} onClose={() => setIsShareModalOpen(false)} showToast={showToast} />
     </div>
   );
 };

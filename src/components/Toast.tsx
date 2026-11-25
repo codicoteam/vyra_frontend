@@ -1,50 +1,65 @@
 import React, { useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { useApp } from '../context/AppContext';
-import { X, CheckCircle, AlertTriangle, Info, AlertCircle } from 'lucide-react';
+import { X, CheckCircle2, AlertTriangle, Info, AlertCircle } from 'lucide-react';
+
+const DURATION = 4000;
+
+const styles = {
+  success: { icon: CheckCircle2, tint: 'text-emerald-500', bar: 'bg-emerald-500', ring: 'ring-emerald-500/20' },
+  error: { icon: AlertCircle, tint: 'text-rose-500', bar: 'bg-rose-500', ring: 'ring-rose-500/20' },
+  warning: { icon: AlertTriangle, tint: 'text-amber-500', bar: 'bg-amber-500', ring: 'ring-amber-500/20' },
+  info: { icon: Info, tint: 'text-violet-500', bar: 'bg-violet-500', ring: 'ring-violet-500/20' },
+} as const;
 
 export const Toast: React.FC = () => {
   const { activeToast, clearToast } = useApp();
 
   useEffect(() => {
     if (activeToast) {
-      const timer = setTimeout(() => {
-        clearToast();
-      }, 4000); // Auto-dismiss after 4 seconds
+      const timer = setTimeout(() => clearToast(), DURATION);
       return () => clearTimeout(timer);
     }
   }, [activeToast, clearToast]);
 
-  if (!activeToast) return null;
-
-  const { message, type } = activeToast;
-
-  const colors = {
-    success: 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-950/85 dark:border-emerald-800 dark:text-emerald-200',
-    error: 'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-950/85 dark:border-rose-800 dark:text-rose-200',
-    warning: 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/85 dark:border-amber-800 dark:text-amber-200',
-    info: 'bg-indigo-50 border-indigo-200 text-indigo-800 dark:bg-indigo-950/85 dark:border-indigo-800 dark:text-indigo-200'
-  };
-
-  const icons = {
-    success: <CheckCircle className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />,
-    error: <AlertCircle className="w-5 h-5 text-rose-600 dark:text-rose-400" />,
-    warning: <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400" />,
-    info: <Info className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-  };
+  const s = activeToast ? styles[activeToast.type] : null;
 
   return (
-    <div id="app-toast" className="fixed top-4 right-4 left-4 sm:left-auto sm:w-96 z-50 animate-fade-in-down">
-      <div className={`flex items-start gap-3 p-4 rounded-xl border shadow-xl backdrop-blur-md transition-all duration-300 ${colors[type]}`}>
-        <div className="shrink-0 mt-0.5">{icons[type]}</div>
-        <div className="flex-1 text-sm font-medium leading-relaxed">{message}</div>
-        <button
-          onClick={clearToast}
-          className="shrink-0 p-1 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg transition-colors text-current/60 hover:text-current"
-          aria-label="Dismiss Notification"
-        >
-          <X className="w-4 h-4" />
-        </button>
-      </div>
+    <div className="fixed top-4 right-4 left-4 sm:left-auto sm:w-[380px] z-[60] pointer-events-none" aria-live="polite">
+      <AnimatePresence>
+        {activeToast && s && (
+          <motion.div
+            key={activeToast.message + activeToast.type}
+            id="app-toast"
+            role="status"
+            initial={{ opacity: 0, y: -16, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, x: 40, transition: { duration: 0.18 } }}
+            transition={{ type: 'spring', stiffness: 420, damping: 30 }}
+            className={`pointer-events-auto relative overflow-hidden flex items-start gap-3 p-4 pr-3 rounded-2xl bg-brand-surface/95 backdrop-blur-xl ring-1 ring-brand-border shadow-lift`}
+          >
+            <div className={`shrink-0 grid place-items-center w-8 h-8 rounded-full ring-4 ${s.ring} ${s.tint}`}>
+              <s.icon className="w-5 h-5" />
+            </div>
+            <p className="flex-1 text-sm font-medium leading-relaxed text-brand-text-primary pt-1">
+              {activeToast.message}
+            </p>
+            <button
+              onClick={clearToast}
+              className="shrink-0 grid place-items-center w-7 h-7 rounded-full text-brand-text-tertiary hover:text-brand-text-primary hover:bg-brand-border-light transition-colors"
+              aria-label="Dismiss notification"
+            >
+              <X className="w-4 h-4" />
+            </button>
+            <motion.span
+              className={`absolute bottom-0 left-0 h-0.5 ${s.bar} opacity-70`}
+              initial={{ width: '100%' }}
+              animate={{ width: '0%' }}
+              transition={{ duration: DURATION / 1000, ease: 'linear' }}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

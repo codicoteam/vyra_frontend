@@ -1,210 +1,376 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { useApp } from '../context/AppContext';
-import { StoryCard } from '../components/StoryCard';
-import { Rss, Plus, Flame, Clock, Heart, Award } from 'lucide-react';
+import { api } from '../services/api';
+import { Story } from '../types';
+import { StoryCard, Avatar, getCategoryColor } from '../components/StoryCard';
+import { Sparkles, Clock, Users, TrendingUp, PenLine, ShieldCheck, LogIn, Compass, Loader2 } from 'lucide-react';
+
+type Tab = 'for-you' | 'latest' | 'following';
+const PAGE = 6;
+
+/** Map a raw Prisma post (as returned by /feed/*) to the Story shape the UI uses */
+const mapRawPost = (p: any): Story => ({
+  id: p.id,
+  title: p.title,
+  excerpt: p.excerpt || '',
+  content: p.content || '',
+  coverImage: p.coverImageUrl || '',
+  category: p.category?.name || 'Uncategorized',
+  tags: [],
+  author: {
+    id: p.author?.id || '',
+    name: p.author?.fullName || 'Unknown',
+    avatar: p.author?.avatarUrl || '',
+    bio: '',
+    username: p.author?.username || '',
+  },
+  isAnonymous: !!p.isAnonymous,
+  readingTime: p.readingTime || 1,
+  publishedDate: p.publishedAt || p.createdAt,
+  likes: p.likeCount || 0,
+  bookmarks: p.bookmarkCount || 0,
+  isResearch: p.isResearch,
+  isCampaign: p.isCampaign,
+  goalProgress: p.campaignProgress || 0,
+});
+
+const greeting = () => {
+  const h = new Date().getHours();
+  return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+};
+
+const SkeletonCard = () => (
+  <div className="rounded-2xl ring-1 ring-brand-border overflow-hidden bg-brand-surface">
+    <div className="aspect-[16/10] skeleton" />
+    <div className="p-5 space-y-3">
+      <div className="h-3 w-1/3 rounded skeleton" />
+      <div className="h-5 w-4/5 rounded skeleton" />
+      <div className="h-3 w-full rounded skeleton" />
+      <div className="h-3 w-2/3 rounded skeleton" />
+    </div>
+  </div>
+);
 
 export const HomeFeedPage: React.FC = () => {
-  const { stories, navigateTo, showToast } = useApp();
-  const [activeTab, setActiveTab] = useState<'for-you' | 'following'>('for-you');
-  const [loading, setLoading] = useState(true);
-  const [feedStories, setFeedStories] = useState<any[]>([]);
-  const [visibleCount, setVisibleCount] = useState(6);
-  const [isInfiniteLoading, setIsInfiniteLoading] = useState(false);
+  const { stories, navigateTo, currentUser, categories } = useApp();
+  const [activeTab, setActiveTab] = useState<Tab>('for-you');
+  const [category, setCategory] = useState<string | null>(null);
+  const [visibleCount, setVisibleCount] = useState(PAGE);
+  const [following, setFollowing] = useState<Story[] | null>(null);
+  const [followingLoading, setFollowingLoading] = useState(false);
+  const [followingError, setFollowingError] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
-  // Trigger initial visual skeleton loading state
+  // Real "following" feed from the API
   useEffect(() => {
-    setLoading(true);
-    const timer = setTimeout(() => {
-      setLoading(false);
-    }, 1100);
-    return () => clearTimeout(timer);
-  }, [activeTab]);
+    if (activeTab !== 'following' || !currentUser || following) return;
+    setFollowingLoading(true);
+    setFollowingError(false);
+    api.feed
+      .getFollowing()
+      .then((res) => setFollowing((res.data || []).map(mapRawPost).filter((s: Story) => !s.isAnonymous)))
+      .catch(() => setFollowingError(true))
+      .finally(() => setFollowingLoading(false));
+  }, [activeTab, currentUser, following]);
 
-  // Handle feed sorting/filtering based on tabs
+  const feedStories = useMemo(() => {
+    let list: Story[];
+    if (activeTab === 'following') list = following || [];
+    else if (activeTab === 'latest')
+      list = [...stories].sort((a, b) => +new Date(b.publishedDate) - +new Date(a.publishedDate));
+    else {
+      // "For you": engagement weighted by freshness
+      const score = (s: Story) => {
+        const ageDays = (Date.now() - +new Date(s.publishedDate)) / 864e5;
+        return (s.likes * 2 + s.bookmarks * 3 + 1) / Math.pow(ageDays + 2, 0.8);
+      };
+      list = [...stories].sort((a, b) => score(b) - score(a));
+    }
+    if (category) list = list.filter((s) => s.category.toLowerCase() === category.toLowerCase());
+    return list;
+  }, [stories, following, activeTab, category]);
+
+  useEffect(() => setVisibleCount(PAGE), [activeTab, category]);
+
+  // Real infinite scroll
   useEffect(() => {
-    let list = [...stories];
-    if (activeTab === 'following') {
-      // Simulate feed from following authors (e.g. filter out anonymous or prioritize specific authors)
-      list = stories.filter(s => !s.isAnonymous && s.author.id !== 'user-12');
-    } else {
-      // "For You" - sort by likes/rating
-      list.sort((a, b) => b.likes - a.likes);
-    }
-    setFeedStories(list);
-    setVisibleCount(6);
-  }, [stories, activeTab]);
+    const el = sentinelRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) setVisibleCount((c) => Math.min(c + PAGE, feedStories.length));
+      },
+      { rootMargin: '600px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+    // re-observe after each page so loading continues while the sentinel stays on screen
+  }, [feedStories.length, visibleCount, activeTab, category, followingLoading, stories.length]);
 
-  const simulateInfiniteScroll = () => {
-    if (visibleCount >= feedStories.length) {
-      showToast('You have read all available articles in your feed!', 'success');
-      return;
-    }
-    setIsInfiniteLoading(true);
-    setTimeout(() => {
-      setVisibleCount(prev => Math.min(prev + 4, feedStories.length));
-      setIsInfiniteLoading(false);
-      showToast('Pulled 4 new publications into your feed', 'success');
-    }, 1000);
-  };
+  const trending = useMemo(() => [...stories].sort((a, b) => b.likes - a.likes).slice(0, 5), [stories]);
+  const writers = useMemo(() => {
+    const map = new Map<string, Story['author']>();
+    stories.forEach((s) => !s.isAnonymous && s.author?.id && map.set(s.author.id, s.author));
+    return Array.from(map.values());
+  }, [stories]);
+  const avgRead = stories.length ? Math.round(stories.reduce((n, s) => n + (s.readingTime || 0), 0) / stories.length) : 0;
+  const catsWithStories = categories.filter((c) => stories.some((s) => s.category.toLowerCase() === c.name.toLowerCase()));
+
+  const isLoading = activeTab === 'following' ? followingLoading : stories.length === 0 && categories.length === 0;
+  const [featured, ...rest] = feedStories;
+
+  const tabs: { id: Tab; label: string }[] = [
+    { id: 'for-you', label: 'For you' },
+    { id: 'latest', label: 'Latest' },
+    { id: 'following', label: 'Following' },
+  ];
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 relative">
-      
-      {/* Top Welcome Title */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-8">
-        <div className="text-left">
-          <h1 className="font-display font-black text-3xl sm:text-4xl text-brand-text-primary tracking-tight">Your Editorial Feed</h1>
-          <p className="text-sm text-brand-text-secondary mt-1">Curated publications, ongoing research papers, and social campaigns.</p>
-        </div>
+    <div className="relative">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-72 bg-gradient-to-b from-violet-500/[0.07] to-transparent" />
 
-        {/* Tab Switchers */}
-        <div className="flex bg-brand-surface p-1 rounded-xl border border-brand-border">
-          <button
-            onClick={() => setActiveTab('for-you')}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
-              activeTab === 'for-you'
-                ? 'bg-brand-primary text-white shadow-sm'
-                : 'text-brand-text-secondary hover:text-brand-primary'
-            }`}
-          >
-            <Award className="w-4 h-4" /> Curated
-          </button>
-          <button
-            onClick={() => setActiveTab('following')}
-            className={`flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
-              activeTab === 'following'
-                ? 'bg-brand-primary text-white shadow-sm'
-                : 'text-brand-text-secondary hover:text-brand-primary'
-            }`}
-          >
-            <Rss className="w-4 h-4" /> Following
-          </button>
-        </div>
-      </div>
+      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10 pb-28">
+        {/* ---------- Header ---------- */}
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="mb-8">
+          <p className="text-sm text-brand-text-tertiary">
+            {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+          </p>
+          <h1 className="font-display font-bold text-3xl sm:text-4xl text-brand-text-primary tracking-tight mt-1">
+            {currentUser ? `${greeting()}, ${currentUser.name.split(' ')[0]}` : 'Your feed'}
+          </h1>
+        </motion.div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
-        
-        {/* Left main feed (staggered layouts) */}
-        <div className="lg:col-span-8 flex flex-col gap-8">
-          {loading ? (
-            // Shimmer Skeleton Loaders
-            <div className="space-y-8">
-              {[1, 2, 3].map(n => (
-                <div key={n} className="bg-brand-surface border border-brand-border rounded-2xl p-6 flex flex-col md:flex-row gap-6 animate-pulse">
-                  <div className="w-full md:w-1/2 h-48 bg-slate-200 dark:bg-slate-800 rounded-xl" />
-                  <div className="flex-1 space-y-4 py-2">
-                    <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded w-1/4" />
-                    <div className="h-8 bg-slate-200 dark:bg-slate-800 rounded w-3/4" />
-                    <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded w-5/6" />
-                    <div className="h-4 bg-slate-200 dark:bg-slate-800 rounded w-2/3" />
-                    <div className="flex items-center gap-3 pt-4">
-                      <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-800" />
-                      <div className="h-3 bg-slate-200 dark:bg-slate-800 rounded w-24" />
-                    </div>
-                  </div>
-                </div>
+        {/* ---------- Tabs + category chips ---------- */}
+        <div className="sticky top-16 z-20 -mx-4 px-4 sm:mx-0 sm:px-0 py-3 mb-6 glass sm:bg-transparent sm:backdrop-blur-none border-b border-brand-border/60 sm:border-0">
+          <div className="flex flex-col lg:flex-row lg:items-center gap-3">
+            <div className="flex items-center p-1 rounded-full bg-brand-surface ring-1 ring-brand-border shadow-soft w-fit" role="tablist">
+              {tabs.map((t) => (
+                <button
+                  key={t.id}
+                  role="tab"
+                  aria-selected={activeTab === t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  className={`relative h-9 px-4 rounded-full text-sm font-semibold transition-colors ${
+                    activeTab === t.id ? 'text-white' : 'text-brand-text-secondary hover:text-brand-text-primary'
+                  }`}
+                >
+                  {activeTab === t.id && (
+                    <motion.span layoutId="feed-tab" className="absolute inset-0 rounded-full bg-brand-gradient shadow-glow" transition={{ type: 'spring', stiffness: 420, damping: 34 }} />
+                  )}
+                  <span className="relative">{t.label}</span>
+                </button>
               ))}
             </div>
-          ) : feedStories.length === 0 ? (
-            <div className="bg-brand-surface border border-brand-border rounded-2xl p-12 text-center flex flex-col items-center gap-4">
-              <Award className="w-12 h-12 text-brand-primary animate-bounce" />
-              <h3 className="font-display font-bold text-lg text-brand-text-primary">No stories found</h3>
-              <p className="text-brand-text-secondary text-sm max-w-sm leading-relaxed">
-                You currently do not follow any writers who have posted. Check back soon or follow additional scholars on our Landing Welcome.
-              </p>
-              <button onClick={() => navigateTo('/')} className="px-6 py-2.5 bg-brand-primary text-white font-bold rounded-xl text-xs uppercase tracking-wider">
-                Discover Popular Authors
-              </button>
-            </div>
-          ) : (
-            // Staggered Render: First story is massive featured layout, rest are standard or grid
-            <div className="space-y-8">
-              {feedStories.slice(0, 1).map(story => (
-                <div key={story.id}>
-                  <StoryCard story={story} variant="featured" />
-                </div>
-              ))}
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {feedStories.slice(1, visibleCount).map(story => (
-                  <div key={story.id} className="h-full">
-                    <StoryCard story={story} />
-                  </div>
+            {catsWithStories.length > 0 && (
+              <div className="flex gap-2 overflow-x-auto scrollbar-none -mx-4 px-4 lg:mx-0 lg:px-0 lg:pl-2">
+                <button
+                  onClick={() => setCategory(null)}
+                  className={`shrink-0 h-9 px-4 rounded-full text-sm font-medium transition-all ${
+                    !category ? 'bg-brand-text-primary text-brand-surface' : 'ring-1 ring-brand-border text-brand-text-secondary hover:text-brand-text-primary'
+                  }`}
+                >
+                  All
+                </button>
+                {catsWithStories.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setCategory(category === c.name ? null : c.name)}
+                    className={`shrink-0 h-9 px-4 rounded-full text-sm font-medium transition-all ${
+                      category === c.name ? 'bg-brand-text-primary text-brand-surface' : 'ring-1 ring-brand-border text-brand-text-secondary hover:text-brand-text-primary'
+                    }`}
+                  >
+                    {c.name}
+                  </button>
                 ))}
               </div>
+            )}
+          </div>
+        </div>
 
-              {/* Simulated Infinite Scroll Trigger */}
-              <div className="text-center pt-4">
-                {isInfiniteLoading ? (
-                  <div className="inline-flex items-center gap-2 px-6 py-3 border border-brand-border bg-brand-surface text-brand-primary rounded-xl text-sm font-semibold">
-                    <div className="w-4 h-4 border-2 border-brand-primary border-t-transparent rounded-full animate-spin" />
-                    Refining feed algorithmic weights...
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-start">
+          {/* ---------- Main feed ---------- */}
+          <main className="lg:col-span-8 min-w-0">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeTab + (category || '')}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.25 }}
+              >
+                {activeTab === 'following' && !currentUser ? (
+                  <EmptyState
+                    icon={LogIn}
+                    title="Sign in to see who you follow"
+                    text="Follow writers and their newest stories will appear here."
+                    action={{ label: 'Sign in', onClick: () => navigateTo('/login') }}
+                  />
+                ) : isLoading ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {[0, 1, 2, 3].map((i) => <SkeletonCard key={i} />)}
                   </div>
-                ) : visibleCount < feedStories.length ? (
-                  <button
-                    onClick={simulateInfiniteScroll}
-                    className="px-6 py-3 border border-brand-primary/30 text-brand-primary hover:bg-brand-primary-light/40 dark:hover:bg-brand-primary-light/10 font-bold text-sm rounded-xl transition-all shadow-sm"
-                  >
-                    Simulate Infinite Scroll Load
-                  </button>
+                ) : followingError && activeTab === 'following' ? (
+                  <EmptyState
+                    icon={Users}
+                    title="Couldn't load your following feed"
+                    text="Check your connection and try again."
+                    action={{ label: 'Retry', onClick: () => setFollowing(null) }}
+                  />
+                ) : feedStories.length === 0 ? (
+                  activeTab === 'following' ? (
+                    <EmptyState
+                      icon={Users}
+                      title="Nothing here yet"
+                      text="You're not following anyone who has published. Find writers you like on Explore."
+                      action={{ label: 'Explore writers', onClick: () => navigateTo('/explore') }}
+                    />
+                  ) : (
+                    <EmptyState
+                      icon={Compass}
+                      title={category ? `No stories in ${category} yet` : 'No stories yet'}
+                      text="Be the first to publish something here."
+                      action={{ label: 'Write a story', onClick: () => navigateTo('/write') }}
+                    />
+                  )
                 ) : (
-                  <p className="text-xs font-mono text-brand-text-tertiary">All articles in feed synchronized successfully</p>
+                  <div className="space-y-6">
+                    {featured && <StoryCard story={featured} variant="featured" />}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {rest.slice(0, visibleCount - 1).map((story, i) => (
+                        <motion.div
+                          key={story.id}
+                          initial={{ opacity: 0, y: 16 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.4, delay: (i % PAGE) * 0.05 }}
+                          className="h-full"
+                        >
+                          <StoryCard story={story} />
+                        </motion.div>
+                      ))}
+                    </div>
+                    <div ref={sentinelRef} className="h-px" />
+                    <div className="text-center pt-4 text-sm text-brand-text-tertiary">
+                      {visibleCount < feedStories.length ? (
+                        <span className="inline-flex items-center gap-2"><Loader2 className="w-4 h-4 animate-spin" /> Loading more</span>
+                      ) : (
+                        <span className="inline-flex items-center gap-2"><Sparkles className="w-4 h-4" /> You're all caught up</span>
+                      )}
+                    </div>
+                  </div>
                 )}
+              </motion.div>
+            </AnimatePresence>
+          </main>
+
+          {/* ---------- Sidebar ---------- */}
+          <aside className="lg:col-span-4 space-y-5 lg:sticky lg:top-24">
+            {/* Trending */}
+            {trending.length > 0 && (
+              <section className="p-5 rounded-3xl bg-brand-surface ring-1 ring-brand-border shadow-soft">
+                <h3 className="font-display font-semibold text-brand-text-primary flex items-center gap-2 mb-4">
+                  <TrendingUp className="w-4 h-4 text-brand-primary" /> Trending now
+                </h3>
+                <ol className="space-y-1">
+                  {trending.map((s, i) => (
+                    <li key={s.id}>
+                      <button
+                        onClick={() => navigateTo(`/story/${s.id}`)}
+                        className="group w-full flex items-start gap-3 p-2 -mx-2 rounded-xl text-left hover:bg-brand-border-light transition-colors"
+                      >
+                        <span className="font-display font-bold text-2xl leading-none text-brand-border tabular-nums w-7 shrink-0 group-hover:text-brand-primary transition-colors">
+                          {String(i + 1).padStart(2, '0')}
+                        </span>
+                        <span className="min-w-0">
+                          <span className="flex items-center gap-1.5 text-xs text-brand-text-tertiary mb-0.5">
+                            <Avatar src={s.author?.avatar} name={s.author?.name} anonymous={s.isAnonymous} className="w-4 h-4" />
+                            <span className="truncate">{s.isAnonymous ? 'Anonymous' : s.author?.name}</span>
+                          </span>
+                          <span className="block text-sm font-semibold text-brand-text-primary leading-snug line-clamp-2 group-hover:text-brand-primary transition-colors">
+                            {s.title}
+                          </span>
+                        </span>
+                      </button>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
+
+            {/* Real stats */}
+            <section className="grid grid-cols-3 gap-2">
+              {[
+                { label: 'Stories', value: stories.length },
+                { label: 'Writers', value: writers.length },
+                { label: 'Avg. read', value: `${avgRead}m`, icon: Clock },
+              ].map((s) => (
+                <div key={s.label} className="p-3.5 rounded-2xl bg-brand-surface ring-1 ring-brand-border text-center">
+                  <div className="font-display font-bold text-xl text-brand-text-primary tabular-nums">{s.value}</div>
+                  <div className="text-[11px] text-brand-text-tertiary">{s.label}</div>
+                </div>
+              ))}
+            </section>
+
+            {/* Topics */}
+            {categories.length > 0 && (
+              <section className="p-5 rounded-3xl bg-brand-surface ring-1 ring-brand-border">
+                <h3 className="font-display font-semibold text-brand-text-primary mb-3">Topics to explore</h3>
+                <div className="flex flex-wrap gap-2">
+                  {categories.slice(0, 10).map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => navigateTo(`/explore/${c.name}`)}
+                      className={`h-8 px-3 rounded-full text-xs font-semibold hover:-translate-y-0.5 transition-transform ${getCategoryColor(c.name)}`}
+                    >
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {/* Write CTA */}
+            <section className="relative overflow-hidden p-6 rounded-3xl bg-[#0d0a1f] text-white">
+              <div className="absolute -top-16 -right-16 w-48 h-48 bg-violet-600/50 rounded-full blur-3xl" />
+              <div className="absolute -bottom-16 -left-10 w-40 h-40 bg-cyan-500/30 rounded-full blur-3xl" />
+              <div className="relative">
+                <ShieldCheck className="w-6 h-6 text-cyan-300 mb-3" />
+                <h3 className="font-display font-bold text-lg">Have something to say?</h3>
+                <p className="text-sm text-slate-300 leading-relaxed mt-1 mb-4">
+                  Publish under your name, or anonymously with your identity hidden from readers.
+                </p>
+                <button
+                  onClick={() => navigateTo('/write')}
+                  className="inline-flex items-center gap-2 h-10 px-4 bg-white text-slate-900 font-semibold text-sm rounded-full hover:bg-slate-100 transition-colors"
+                >
+                  <PenLine className="w-4 h-4" /> Start writing
+                </button>
               </div>
-            </div>
-          )}
+            </section>
+          </aside>
         </div>
-
-        {/* Right Editorial sidebar */}
-        <div className="lg:col-span-4 space-y-6">
-          
-          {/* Quick Stats Panel */}
-          <div className="bg-brand-surface border border-brand-border p-6 rounded-2xl transition-theme text-left">
-            <h3 className="font-display font-bold text-base text-brand-text-primary flex items-center gap-2 border-b border-brand-border-light pb-3 mb-4">
-              <Flame className="w-4 h-4 text-orange-500" /> Platform Highlights
-            </h3>
-            <ul className="space-y-3 text-sm">
-              <li className="flex justify-between items-center text-xs">
-                <span className="text-brand-text-secondary flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" /> Average Reading Time</span>
-                <span className="font-bold text-brand-text-primary">7.5 mins</span>
-              </li>
-              <li className="flex justify-between items-center text-xs">
-                <span className="text-brand-text-secondary flex items-center gap-1.5"><Heart className="w-3.5 h-3.5" /> Total Community Likes</span>
-                <span className="font-bold text-brand-text-primary">12,540+</span>
-              </li>
-              <li className="flex justify-between items-center text-xs">
-                <span className="text-brand-text-secondary flex items-center gap-1.5"><Award className="w-3.5 h-3.5" /> Peer Reviewed Index</span>
-                <span className="font-bold text-brand-text-primary">94.8%</span>
-              </li>
-            </ul>
-          </div>
-
-          {/* Guidelines Sidebar card */}
-          <div className="bg-gradient-to-br from-purple-900 to-indigo-950 p-6 rounded-2xl text-white text-left shadow-md">
-            <h3 className="font-display font-black text-lg mb-2">Write Securely</h3>
-            <p className="text-xs text-indigo-200 leading-relaxed mb-4">
-              VYRA employs military-grade local browser metadata shredding to safeguard whistleblowers and investigative journalists publishing anonymous articles.
-            </p>
-            <button
-              onClick={() => navigateTo('/write')}
-              className="w-full py-2 px-4 bg-white text-purple-950 font-bold text-xs uppercase rounded-xl tracking-wider text-center hover:bg-indigo-50 transition-colors"
-            >
-              Draft Anonymous Report
-            </button>
-          </div>
-        </div>
-
       </div>
-
-      {/* Floating Action Button (FAB) for Mobile drafting */}
-      <button
-        onClick={() => navigateTo('/write')}
-        className="fixed bottom-20 right-6 z-40 md:hidden bg-brand-primary hover:bg-brand-primary-hover text-white p-4 rounded-full shadow-2xl flex items-center justify-center animate-bounce"
-        title="Author draft story"
-      >
-        <Plus className="w-6 h-6" />
-      </button>
-
     </div>
   );
 };
+
+const EmptyState: React.FC<{
+  icon: React.ElementType;
+  title: string;
+  text: string;
+  action?: { label: string; onClick: () => void };
+}> = ({ icon: Icon, title, text, action }) => (
+  <div className="p-12 rounded-3xl bg-brand-surface ring-1 ring-brand-border text-center flex flex-col items-center">
+    <div className="grid place-items-center w-14 h-14 rounded-2xl bg-brand-primary-light text-brand-primary mb-4">
+      <Icon className="w-6 h-6" />
+    </div>
+    <h3 className="font-display font-semibold text-lg text-brand-text-primary">{title}</h3>
+    <p className="text-sm text-brand-text-secondary max-w-sm mt-1.5 leading-relaxed">{text}</p>
+    {action && (
+      <button onClick={action.onClick} className="mt-6 h-10 px-5 bg-brand-gradient text-white font-semibold rounded-full text-sm shadow-glow">
+        {action.label}
+      </button>
+    )}
+  </div>
+);
